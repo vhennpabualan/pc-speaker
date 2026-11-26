@@ -1,73 +1,174 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#101826"><link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="PC Speaker"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/style.css"><title>PC Speaker</title></head><body><main>
-<h1>PC Speaker</h1><p>Enter the 6-digit code shown on your PC.</p>
-<input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="off">
-<button id="go">Start listening</button>
-<div class="status" id="status"><span class="dot"></span><span id="msg">Not connected</span></div>
-<small>Use the volume buttons on your iPhone to change the volume.</small>
+<link rel="stylesheet" href="/style.css">
+<title>PC Speaker</title>
+<style>
+  [hidden]{display:none!important}
+  .pill{display:inline-block;padding:6px 16px;border-radius:99px;font-size:14px;font-weight:600;background:#2b3a57;color:var(--mut)}
+  .pill.ok{background:rgba(79,209,197,.18);color:var(--acc)}
+  .pill.bad{background:rgba(255,123,123,.18);color:var(--bad)}
+  .ms{margin:26px 0 4px;display:flex;justify-content:center;align-items:baseline;gap:6px}
+  .ms b{font:700 76px/1 ui-monospace,Menlo,Consolas,monospace}
+  .ms span{font-size:24px;color:var(--mut)}
+  .ms.good b{color:var(--acc)} .ms.mid b{color:#f5c542} .ms.poor b{color:var(--bad)}
+  #verdict{margin:0 0 20px}
+  .row{display:flex;gap:10px}
+  .row div{flex:1;background:var(--bg);border-radius:12px;padding:10px}
+  .row b{display:block;font-size:20px}
+  .row i{display:block;font-style:normal;font-size:13px;color:var(--mut)}
+  button.ghost{background:transparent;color:var(--fg);border:2px solid #2b3a57}
+</style></head><body><main>
+
+<!-- SCREEN 1: enter code -->
+<section id="setup">
+  <h1>PC Speaker</h1><p>Enter the 6-digit code shown on your PC.</p>
+  <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="off">
+  <button id="go">Start listening</button>
+  <div class="status" id="status"><span class="dot"></span><span id="msg">Not connected</span></div>
+  <small>Use the volume buttons on your iPhone to change the volume.</small>
+</section>
+
+<!-- SCREEN 2: connected -->
+<section id="live" hidden>
+  <span class="pill" id="pill">Connecting…</span>
+  <div class="ms" id="msbox"><b id="ms">—</b><span>ms</span></div>
+  <p id="verdict">Estimated delay</p>
+  <div class="row">
+    <div><b id="net">—</b><i>Network</i></div>
+    <div><b id="buf">—</b><i>Buffer</i></div>
+  </div>
+  <button id="stop" class="ghost">Disconnect</button>
+</section>
+
 <audio id="player" playsinline></audio>
 </main>
 <script src="/lib/peerjs.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const setStatus = (t, c = '') => { $('msg').textContent = t; $('status').className = 'status ' + c; };
 const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000');
 const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 const TARGET_MS = 20;   // playback buffer; raise to 50-100 if audio crackles
+const EXTRA_MS  = 40;   // rough guess for PC capture + phone output; set 0 to show only measured delay
+const GOOD_MS = 100, BAD_MS = 180;   // colour thresholds
 
 const audio = $('player');
-let peer, wake;
+let peer, call, wake, timer, prev = null, hist = [];
 
 $('code').value = localStorage.getItem('code') || '';
+
+function show(view) { $('setup').hidden = view !== 'setup'; $('live').hidden = view !== 'live'; }
+function setSetupStatus(t, c = '') { $('msg').textContent = t; $('status').className = 'status ' + c; }
+function setPill(t, c = '') { $('pill').textContent = t; $('pill').className = 'pill ' + c; }
+
+function resetStats() {
+  prev = null; hist = [];
+  $('ms').textContent = '—'; $('net').textContent = '—'; $('buf').textContent = '—';
+  $('msbox').className = 'ms';
+}
 
 async function keepAwake() { try { wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && peer) keepAwake(); });
 document.body.addEventListener('click', () => { if (audio.srcObject && audio.paused) audio.play().catch(() => {}); });
 
-function lowLatency(call) {
+function lowLatency(c) {
   try {
-    call.peerConnection.getReceivers().forEach(r => {
+    c.peerConnection.getReceivers().forEach(r => {
       if ('jitterBufferTarget' in r) r.jitterBufferTarget = TARGET_MS;
       if ('playoutDelayHint' in r) r.playoutDelayHint = TARGET_MS / 1000;
     });
   } catch (e) {}
 }
 
+// Measure delay once per second
+async function poll() {
+  if (!call || !call.peerConnection) return;
+  try {
+    const stats = await call.peerConnection.getStats();
+    let rtt = null, inbound = null;
+    stats.forEach(r => {
+      if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded' && r.currentRoundTripTime != null)
+        rtt = r.currentRoundTripTime * 1000;
+      if (r.type === 'inbound-rtp' && r.kind === 'audio') inbound = r;
+    });
+
+    let buf = null;
+    if (inbound && inbound.jitterBufferEmittedCount != null) {
+      if (prev) {
+        const n = inbound.jitterBufferEmittedCount - prev.c;
+        if (n > 0) buf = (inbound.jitterBufferDelay - prev.d) / n * 1000;
+      }
+      prev = { c: inbound.jitterBufferEmittedCount, d: inbound.jitterBufferDelay };
+    }
+    const net = rtt != null ? rtt / 2 : null;
+    if (net == null && buf == null) return;
+
+    hist.push((net || 0) + (buf || 0) + EXTRA_MS);
+    if (hist.length > 3) hist.shift();
+    const total = Math.round(hist.reduce((a, b) => a + b, 0) / hist.length);
+
+    $('ms').textContent = total;
+    $('net').textContent = net != null ? Math.round(net) + ' ms' : '—';
+    $('buf').textContent = buf != null ? Math.round(buf) + ' ms' : '—';
+    const q = total < GOOD_MS ? 'good' : total < BAD_MS ? 'mid' : 'poor';
+    $('msbox').className = 'ms ' + q;
+    $('verdict').textContent = q === 'good' ? 'Great sync' : q === 'mid' ? 'Noticeable on dialogue' : 'Too delayed';
+  } catch (e) {}
+}
+
+function disconnect() {
+  clearInterval(timer); timer = null;
+  if (peer) peer.destroy();
+  peer = null; call = null;
+  audio.pause(); audio.srcObject = null;
+  if (wake) wake.release().catch(() => {}); wake = null;
+  resetStats();
+  $('go').disabled = false;
+  show('setup'); setSetupStatus('Not connected');
+}
+$('stop').onclick = disconnect;
+
 $('go').onclick = () => {
   const code = $('code').value.trim();
-  if (!/^\d{6}$/.test(code)) return setStatus('Enter the 6-digit code from your PC.', 'bad');
+  if (!/^\d{6}$/.test(code)) return setSetupStatus('Enter the 6-digit code from your PC.', 'bad');
   localStorage.setItem('code', code);
 
   // Unlock audio playback inside this tap (iOS requirement)
   audio.src = SILENT; audio.play().catch(() => {});
   keepAwake();
 
-  $('go').disabled = true; setStatus('Connecting…');
+  resetStats();
+  $('verdict').textContent = 'Estimated delay';
+  setPill('Connecting…'); show('live');
   if (peer) peer.destroy();
   peer = new Peer();
+
   peer.on('open', () => {
     const conn = peer.connect('pcspk-' + code, { reliable: true });
-    conn.on('open', () => setStatus('Connected. Waiting for the PC to share audio…', 'ok'));
-    conn.on('close', () => { setStatus('PC disconnected.', 'bad'); $('go').disabled = false; });
+    conn.on('open', () => setPill('Connected · waiting for PC audio', 'ok'));
+    conn.on('close', () => { setPill('PC disconnected', 'bad'); clearInterval(timer); resetStats(); });
   });
-  peer.on('call', call => {
-    call.answer(undefined, { sdpTransform: stereo });
-    call.on('stream', s => {
+
+  peer.on('call', c => {
+    call = c;
+    c.answer(undefined, { sdpTransform: stereo });
+    c.on('stream', s => {
       audio.srcObject = s;
-      audio.play().then(() => setStatus('Playing PC audio', 'ok'))
-                  .catch(() => setStatus('Tap anywhere to start playing.', 'bad'));
-      lowLatency(call);
+      audio.play().then(() => setPill('Connected · playing', 'ok'))
+                  .catch(() => setPill('Tap the screen to start', 'bad'));
+      lowLatency(c);
+      prev = null; clearInterval(timer); timer = setInterval(poll, 1000);
       if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: 'PC audio', artist: 'PC Speaker' });
     });
-    call.on('close', () => setStatus('Stream ended.', 'bad'));
+    c.on('close', () => { setPill('Stream ended', 'bad'); clearInterval(timer); resetStats(); });
   });
+
   peer.on('disconnected', () => peer.reconnect());
   peer.on('error', e => {
-    setStatus(e.type === 'peer-unavailable' ? 'Code not found. Is the PC page open?' : 'Error: ' + e.type, 'bad');
-    $('go').disabled = false;
+    disconnect();
+    setSetupStatus(e.type === 'peer-unavailable' ? 'Code not found. Is the PC page open?' : 'Error: ' + e.type, 'bad');
   });
 };
 
