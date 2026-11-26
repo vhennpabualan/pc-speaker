@@ -73,9 +73,30 @@ const TARGET_MS = 20;   // playback buffer; raise to 50-100 if audio crackles
 const EXTRA_MS  = 40;   // rough guess for PC capture + phone output; set 0 to show only measured delay
 const EXCELLENT_MS = 80, GOOD_MS = 100;
 
+function getDeviceId() {
+  const key = 'pcspk-device-id';
+  const saved = localStorage.getItem(key);
+  if (/^[a-f0-9]{32}$/.test(saved || '')) return saved;
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const id = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  localStorage.setItem(key, id);
+  return id;
+}
+
+function getDeviceLabel() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPod/i.test(ua)) return 'iPhone';
+  if (/iPad/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
+  if (/Android/i.test(ua)) return 'Android';
+  return 'Mobile device';
+}
+
+const deviceId = getDeviceId();
+const deviceLabel = getDeviceLabel();
 const audio = $('player');
 let peer, call, wake, timer, prev = null, hist = [];
 let qrScanner;
+let connectionAttempt = 0;
 
 $('code').value = localStorage.getItem('code') || '';
 
@@ -207,6 +228,7 @@ async function poll() {
 }
 
 function disconnect() {
+  connectionAttempt++;
   clearInterval(timer); timer = null;
   if (peer) peer.destroy();
   peer = null; call = null;
@@ -225,6 +247,7 @@ function unlockAudio() {
 
 function startListening(code, unlock = true) {
   if (!/^\d{6}$/.test(code)) return setSetupStatus('Enter the 6-digit code from your PC.', 'bad');
+  const attempt = ++connectionAttempt;
   localStorage.setItem('code', code);
 
   if (unlock) unlockAudio();
@@ -235,21 +258,57 @@ function startListening(code, unlock = true) {
   $('reconnect').hidden = true;
   setPill('Connecting…'); show('live');
   if (peer) peer.destroy();
-  peer = new Peer();
+  const currentPeer = new Peer();
+  peer = currentPeer;
 
-  peer.on('open', () => {
-    const conn = peer.connect('pcspk-' + code, { reliable: true });
-    conn.on('open', () => setPill('Connected · waiting for PC audio', 'ok'));
+  currentPeer.on('open', () => {
+    if (attempt !== connectionAttempt) return;
+    const conn = currentPeer.connect('pcspk-' + code, {
+      reliable: true,
+      metadata: { deviceId, deviceLabel }
+    });
+    let approvalStatus = 'waiting';
+    const showApprovalStatus = status => {
+      approvalStatus = status;
+      if (status === 'waiting') {
+        setPill('Waiting for approval on your PC');
+        $('reconnect').hidden = true;
+      } else if (status === 'approved') {
+        setPill('Connected - waiting for PC audio', 'ok');
+        $('reconnect').hidden = true;
+      } else {
+        setPill('Declined by PC', 'bad');
+        $('reconnect').hidden = true;
+        if (conn.open) conn.send({ type: 'approval-ack', status: 'declined' });
+      }
+    };
+    conn.on('open', () => {
+      if (attempt === connectionAttempt) showApprovalStatus('waiting');
+    });
+    conn.on('data', message => {
+      if (attempt !== connectionAttempt) return;
+      if (!message || message.type !== 'approval') return;
+      if (!['waiting', 'approved', 'declined'].includes(message.status)) return;
+      showApprovalStatus(message.status);
+    });
     conn.on('close', () => {
+      if (attempt !== connectionAttempt) return;
+      if (approvalStatus === 'declined') {
+        setPill('Declined by PC', 'bad');
+        $('reconnect').hidden = true;
+        return;
+      }
       setPill('PC disconnected', 'bad'); $('reconnect').hidden = false;
       clearInterval(timer); resetStats();
     });
   });
 
-  peer.on('call', c => {
+  currentPeer.on('call', c => {
+    if (attempt !== connectionAttempt) { c.close(); return; }
     call = c;
     c.answer(undefined, { sdpTransform: stereo });
     c.on('stream', s => {
+      if (attempt !== connectionAttempt) return;
       audio.srcObject = s;
       audio.play().then(() => setPill('Connected · playing', 'ok'))
                   .catch(() => setPill('Tap the screen to start', 'bad'));
@@ -259,13 +318,17 @@ function startListening(code, unlock = true) {
       if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: 'PC audio', artist: 'PC Speaker' });
     });
     c.on('close', () => {
+      if (attempt !== connectionAttempt) return;
       setPill('Stream ended', 'bad'); $('reconnect').hidden = false;
       clearInterval(timer); resetStats();
     });
   });
 
-  peer.on('disconnected', () => peer.reconnect());
-  peer.on('error', e => {
+  currentPeer.on('disconnected', () => {
+    if (attempt === connectionAttempt) currentPeer.reconnect();
+  });
+  currentPeer.on('error', e => {
+    if (attempt !== connectionAttempt) return;
     disconnect();
     setSetupStatus(e.type === 'peer-unavailable' ? 'Code not found. Is the PC page open?' : 'Error: ' + e.type, 'bad');
   });

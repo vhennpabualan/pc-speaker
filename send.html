@@ -14,8 +14,8 @@
   .approval p{margin:0 0 12px}
 </style><title>Send PC audio</title></head><body><main>
 <section id="approval" class="approval" aria-labelledby="approval-title" aria-live="polite" hidden>
-  <h2 id="approval-title">Allow this device?</h2>
-  <p id="approval-copy">A device wants to listen to this PC's audio. Only allow if you are expecting your iPhone.</p>
+  <h2 id="approval-title">Allow device?</h2>
+  <p id="approval-copy">A device wants to listen to this PC's audio.</p>
   <button id="allow-device" type="button">Allow device</button>
   <button id="deny-device" class="ghost" type="button">Decline</button>
 </section>
@@ -26,7 +26,7 @@
 <p>Scan with your iPhone camera, or type the code.</p>
 <button id="start" disabled>Share system audio</button>
 <div class="status" id="status"><span class="dot"></span><span id="msg">Connecting…</span></div>
-<small>In the share window, choose <b>Entire screen</b> and turn on <b>Share system audio</b>.</small>
+<small>New devices need approval; approved devices reconnect automatically. In the share window, choose <b>Entire screen</b> and turn on <b>Share system audio</b>.</small>
 </section>
 <section id="session" hidden>
   <h1>Audio is live</h1>
@@ -37,6 +37,7 @@
   <button id="toggle-pairing" type="button" aria-expanded="false">Show pairing code</button>
   <button id="stop-sharing" class="ghost" type="button">Stop sharing</button>
 </section>
+<button id="forget-devices" class="ghost" type="button" hidden>Forget approved devices</button>
 </main>
 <script src="/lib/peerjs.min.js"></script>
 <script src="/lib/Qrcode.js"></script>
@@ -52,6 +53,8 @@ const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;spr
 let peer, stream, display;
 const ids = new Set(), calls = {};
 const pendingConnections = [], connectionStates = new Map(), knownPeers = new Set();
+const approvedDeviceIds = new Set();
+let approvalStorageKey = '';
 
 function drawQR(code) {
   const qr = qrcode(0, 'M');
@@ -92,13 +95,35 @@ function updateApproval() {
   const pending = pendingConnections[0];
   $('approval').hidden = !pending;
   if (!pending) return;
-  $('approval-copy').textContent = pendingConnections.length > 1
-    ? pendingConnections.length + ' devices are waiting for approval.'
-    : 'A device with your pairing code wants to listen. Only allow if you are expecting your iPhone.';
+  const state = connectionStates.get(pending);
+  if (!state) return;
+  const index = pendingConnections.indexOf(pending) + 1;
+  const queue = pendingConnections.length > 1
+    ? 'Request ' + index + ' of ' + pendingConnections.length + '. '
+    : '';
+  $('approval-title').textContent = 'Allow ' + state.deviceLabel + '?';
+  $('approval-copy').textContent = !state.open
+    ? queue + 'Connecting to the device...'
+    : queue + (state.deviceId
+      ? 'Device ID ending ' + state.deviceId.slice(-6).toUpperCase() + '. '
+      : 'This device cannot be remembered and may need approval next time. ')
+      + 'Only allow if you recognize it.';
+  $('allow-device').disabled = !state.open;
+  $('deny-device').disabled = !state.open;
+}
+
+function getDeviceDetails(conn) {
+  const metadata = conn.metadata || {};
+  const deviceId = typeof metadata.deviceId === 'string' && /^[a-f0-9]{32}$/.test(metadata.deviceId)
+    ? metadata.deviceId : null;
+  const label = typeof metadata.deviceLabel === 'string'
+    ? metadata.deviceLabel.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24)
+    : '';
+  return { deviceId, deviceLabel: label || 'Unknown device' };
 }
 
 function activateConnection(conn, state) {
-  if (!state.approved || !state.open || state.active) return;
+  if (!state.approved || !state.open || !conn.open || state.active) return;
   state.active = true;
   ids.add(conn.peer);
   callIt(conn.peer);
@@ -111,6 +136,8 @@ function allowNextDevice() {
   const state = connectionStates.get(conn);
   if (state) {
     state.approved = true;
+    if (state.deviceId) rememberDevice(state.deviceId);
+    if (state.open && conn.open) conn.send({ type: 'approval', status: 'approved' });
     activateConnection(conn, state);
     if (!state.active) setStatus('Device approved. Connecting...', '');
   }
@@ -119,8 +146,41 @@ function allowNextDevice() {
 
 function declineNextDevice() {
   const conn = pendingConnections.shift();
-  if (conn) conn.close();
+  if (conn) {
+    const state = connectionStates.get(conn);
+    if (state && state.open && conn.open) {
+      state.declined = true;
+      conn.send({ type: 'approval', status: 'declined' });
+      state.declineTimer = setTimeout(() => {
+        if (connectionStates.has(conn)) conn.close();
+      }, 1500);
+    } else {
+      conn.close();
+    }
+  }
   updateApproval();
+}
+
+function updateForgetDevices() {
+  const count = approvedDeviceIds.size;
+  const button = $('forget-devices');
+  button.hidden = !count;
+  button.textContent = count === 1 ? 'Forget 1 approved device' : 'Forget ' + count + ' approved devices';
+}
+
+function loadApprovedDevices(code) {
+  approvalStorageKey = 'pcspk-approved-devices-' + code;
+  approvedDeviceIds.clear();
+  (localStorage.getItem(approvalStorageKey) || '').split(',').forEach(id => {
+    if (/^[a-f0-9]{32}$/.test(id)) approvedDeviceIds.add(id);
+  });
+  updateForgetDevices();
+}
+
+function rememberDevice(id) {
+  approvedDeviceIds.add(id);
+  localStorage.setItem(approvalStorageKey, Array.from(approvedDeviceIds).join(','));
+  updateForgetDevices();
 }
 
 function stopSharing() {
@@ -135,6 +195,7 @@ function stopSharing() {
 }
 
 function start(code) {
+  loadApprovedDevices(code);
   peer = new Peer('pcspk-' + code);
   peer.on('open', () => {
     localStorage.setItem('code', code);
@@ -151,16 +212,34 @@ function start(code) {
   peer.on('connection', conn => {
     if (knownPeers.has(conn.peer)) { conn.close(); return; }
     knownPeers.add(conn.peer);
-    const state = { approved: false, open: false, active: false };
+    const device = getDeviceDetails(conn);
+    const state = {
+      approved: !!device.deviceId && approvedDeviceIds.has(device.deviceId),
+      open: false,
+      active: false,
+      declined: false,
+      declineTimer: null,
+      deviceId: device.deviceId,
+      deviceLabel: device.deviceLabel
+    };
     connectionStates.set(conn, state);
-    pendingConnections.push(conn);
+    if (!state.approved) pendingConnections.push(conn);
     conn.on('open', () => {
       state.open = true;
-      activateConnection(conn, state);
+      conn.send({ type: 'approval', status: state.approved ? 'approved' : 'waiting' });
+      if (state.approved) activateConnection(conn, state);
+      updateApproval();
+    });
+    conn.on('data', message => {
+      if (state.declined && message && message.type === 'approval-ack' && message.status === 'declined') {
+        clearTimeout(state.declineTimer);
+        conn.close();
+      }
     });
     conn.on('close', () => {
       const index = pendingConnections.indexOf(conn);
       if (index >= 0) pendingConnections.splice(index, 1);
+      if (state.declineTimer) clearTimeout(state.declineTimer);
       if (state.active) {
         ids.delete(conn.peer);
         if (calls[conn.peer]) calls[conn.peer].close();
@@ -171,12 +250,18 @@ function start(code) {
       update();
       updateApproval();
     });
-    updateApproval();
+    if (!state.approved) updateApproval();
   });
 }
 
 $('allow-device').onclick = allowNextDevice;
 $('deny-device').onclick = declineNextDevice;
+$('forget-devices').onclick = () => {
+  approvedDeviceIds.clear();
+  localStorage.removeItem(approvalStorageKey);
+  updateForgetDevices();
+  setStatus('Remembered devices cleared. They will need approval next time.', 'ok');
+};
 
 $('start').onclick = async () => {
   try {
