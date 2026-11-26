@@ -59,8 +59,14 @@ const newCode = () => String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
 
 function update() {
   const n = Object.keys(calls).length;
-  if (!stream) return;
-  $('device-count').textContent = n;
+  $('device-count').textContent = ids.size;
+  if (!stream) {
+    const connected = ids.size;
+    setStatus(connected
+      ? connected + ' device' + (connected > 1 ? 's' : '') + ' connected. Ready to share audio.'
+      : 'Waiting for an iPhone to scan or enter the code.', connected ? 'ok' : '');
+    return;
+  }
   setStatus(n ? 'Streaming to ' + n + ' device' + (n > 1 ? 's' : '') : 'Sharing. Waiting for your iPhone…', n ? 'ok' : '');
 }
 
@@ -79,7 +85,7 @@ function start(code) {
     $('code').textContent = code;
     drawQR(code);
     $('start').disabled = !!stream;
-    if (!stream) setStatus('Ready. Click "Share system audio".');
+    if (!stream) setStatus('Ready. Scan the QR code or enter the code on your iPhone.');
   });
   peer.on('error', e => {
     if (e.type === 'unavailable-id') { peer.destroy(); start(newCode()); }
@@ -87,7 +93,7 @@ function start(code) {
   });
   peer.on('disconnected', () => peer.reconnect());
   peer.on('connection', conn => {
-    conn.on('open', () => { ids.add(conn.peer); callIt(conn.peer); });
+    conn.on('open', () => { ids.add(conn.peer); callIt(conn.peer); update(); });
     conn.on('close', () => {
       ids.delete(conn.peer);
       if (calls[conn.peer]) calls[conn.peer].close();
