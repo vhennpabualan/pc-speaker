@@ -13,7 +13,7 @@
   .ms{margin:26px 0 4px;display:flex;justify-content:center;align-items:baseline;gap:6px}
   .ms b{font:700 76px/1 ui-monospace,Menlo,Consolas,monospace}
   .ms span{font-size:24px;color:var(--mut)}
-  .ms.good b{color:var(--acc)} .ms.mid b{color:#f5c542} .ms.poor b{color:var(--bad)}
+  .ms.excellent b{color:var(--acc)} .ms.good b{color:#f5c542} .ms.low b{color:var(--bad)}
   #verdict{margin:0 0 20px}
   .row{display:flex;gap:10px}
   .row div{flex:1;background:var(--bg);border-radius:12px;padding:10px}
@@ -52,11 +52,12 @@
 <section id="live" hidden>
   <span class="pill" id="pill">Connecting…</span>
   <div class="ms" id="msbox"><b id="ms">—</b><span>ms</span></div>
-  <p id="verdict">Estimated delay</p>
+  <p id="verdict">Estimated latency</p>
   <div class="row">
     <div><b id="net">—</b><i>Network</i></div>
     <div><b id="buf">—</b><i>Buffer</i></div>
   </div>
+  <button id="reconnect" class="ghost" hidden>Reconnect</button>
   <button id="stop" class="ghost">Disconnect</button>
 </section>
 
@@ -70,7 +71,7 @@ const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;spr
 const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 const TARGET_MS = 20;   // playback buffer; raise to 50-100 if audio crackles
 const EXTRA_MS  = 40;   // rough guess for PC capture + phone output; set 0 to show only measured delay
-const GOOD_MS = 100, BAD_MS = 180;   // colour thresholds
+const EXCELLENT_MS = 50, GOOD_MS = 100;
 
 const audio = $('player');
 let peer, call, wake, timer, prev = null, hist = [];
@@ -78,18 +79,23 @@ let qrScanner;
 
 $('code').value = localStorage.getItem('code') || '';
 
-// Opened from the QR code on the PC: fill in the code, then one tap to start
+// A QR link opened by the iPhone camera can connect immediately.
 const qrCode = new URLSearchParams(location.search).get('code');
 if (/^\d{6}$/.test(qrCode || '')) {
   $('code').value = qrCode;
   localStorage.setItem('code', qrCode);
   history.replaceState(null, '', '/receive');
-  setSetupStatus('Code filled in from QR. Tap Start listening.', 'ok');
 }
 
 function show(view) { $('setup').hidden = view !== 'setup'; $('live').hidden = view !== 'live'; }
 function setSetupStatus(t, c = '') { $('msg').textContent = t; $('status').className = 'status ' + c; }
 function setPill(t, c = '') { $('pill').textContent = t; $('pill').className = 'pill ' + c; }
+
+function latencyQuality(ms) {
+  if (ms < EXCELLENT_MS) return 'excellent';
+  if (ms <= GOOD_MS) return 'good';
+  return 'low';
+}
 
 function handleScan(result) {
   let scanned;
@@ -109,12 +115,14 @@ function handleScan(result) {
   $('scanner').hidden = true;
   $('code').value = code;
   localStorage.setItem('code', code);
-  setSetupStatus('Code scanned. Tap Start listening.', 'ok');
+  history.replaceState(null, '', '/receive');
+  startListening(code, false);
 }
 
 async function openScanner() {
   $('scanner').hidden = false;
   $('scan-msg').textContent = 'Point your camera at the QR code on your PC.';
+  unlockAudio();
   if (!qrScanner) {
     qrScanner = new QrScanner($('scanner-video'), handleScan, {
       returnDetailedScanResult: true,
@@ -141,12 +149,16 @@ $('close-scan').onclick = closeScanner;
 function resetStats() {
   prev = null; hist = [];
   $('ms').textContent = '—'; $('net').textContent = '—'; $('buf').textContent = '—';
-  $('msbox').className = 'ms';
+  $('msbox').className = 'ms'; $('verdict').textContent = 'Estimated latency';
 }
 
 async function keepAwake() { try { wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && peer) keepAwake(); });
-document.body.addEventListener('click', () => { if (audio.srcObject && audio.paused) audio.play().catch(() => {}); });
+document.body.addEventListener('click', () => {
+  if (audio.srcObject && audio.paused)
+    audio.play().then(() => setPill('Connected - playing', 'ok'))
+                .catch(() => setPill('Tap the screen to start', 'bad'));
+});
 
 function lowLatency(c) {
   try {
@@ -187,9 +199,10 @@ async function poll() {
     $('ms').textContent = total;
     $('net').textContent = net != null ? Math.round(net) + ' ms' : '—';
     $('buf').textContent = buf != null ? Math.round(buf) + ' ms' : '—';
-    const q = total < GOOD_MS ? 'good' : total < BAD_MS ? 'mid' : 'poor';
+    const q = latencyQuality(total);
     $('msbox').className = 'ms ' + q;
-    $('verdict').textContent = q === 'good' ? 'Great sync' : q === 'mid' ? 'Noticeable on dialogue' : 'Too delayed';
+    $('verdict').textContent = q === 'excellent' ? 'Excellent signal (estimated)'
+      : q === 'good' ? 'Good signal (estimated)' : 'Low signal (estimated)';
   } catch (e) {}
 }
 
@@ -201,21 +214,25 @@ function disconnect() {
   if (wake) wake.release().catch(() => {}); wake = null;
   resetStats();
   $('go').disabled = false;
+  $('reconnect').hidden = true;
   show('setup'); setSetupStatus('Not connected');
 }
 $('stop').onclick = disconnect;
 
-$('go').onclick = () => {
-  const code = $('code').value.trim();
+function unlockAudio() {
+  audio.src = SILENT; audio.play().catch(() => {});
+}
+
+function startListening(code, unlock = true) {
   if (!/^\d{6}$/.test(code)) return setSetupStatus('Enter the 6-digit code from your PC.', 'bad');
   localStorage.setItem('code', code);
 
-  // Unlock audio playback inside this tap (iOS requirement)
-  audio.src = SILENT; audio.play().catch(() => {});
+  if (unlock) unlockAudio();
   keepAwake();
+  $('go').disabled = true;
 
   resetStats();
-  $('verdict').textContent = 'Estimated delay';
+  $('reconnect').hidden = true;
   setPill('Connecting…'); show('live');
   if (peer) peer.destroy();
   peer = new Peer();
@@ -223,7 +240,10 @@ $('go').onclick = () => {
   peer.on('open', () => {
     const conn = peer.connect('pcspk-' + code, { reliable: true });
     conn.on('open', () => setPill('Connected · waiting for PC audio', 'ok'));
-    conn.on('close', () => { setPill('PC disconnected', 'bad'); clearInterval(timer); resetStats(); });
+    conn.on('close', () => {
+      setPill('PC disconnected', 'bad'); $('reconnect').hidden = false;
+      clearInterval(timer); resetStats();
+    });
   });
 
   peer.on('call', c => {
@@ -233,11 +253,15 @@ $('go').onclick = () => {
       audio.srcObject = s;
       audio.play().then(() => setPill('Connected · playing', 'ok'))
                   .catch(() => setPill('Tap the screen to start', 'bad'));
+      $('reconnect').hidden = true;
       lowLatency(c);
       prev = null; clearInterval(timer); timer = setInterval(poll, 1000);
       if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: 'PC audio', artist: 'PC Speaker' });
     });
-    c.on('close', () => { setPill('Stream ended', 'bad'); clearInterval(timer); resetStats(); });
+    c.on('close', () => {
+      setPill('Stream ended', 'bad'); $('reconnect').hidden = false;
+      clearInterval(timer); resetStats();
+    });
   });
 
   peer.on('disconnected', () => peer.reconnect());
@@ -245,7 +269,12 @@ $('go').onclick = () => {
     disconnect();
     setSetupStatus(e.type === 'peer-unavailable' ? 'Code not found. Is the PC page open?' : 'Error: ' + e.type, 'bad');
   });
-};
+}
+
+$('go').onclick = () => startListening($('code').value.trim());
+$('reconnect').onclick = () => startListening($('code').value.trim());
+
+if (/^\d{6}$/.test(qrCode || '')) startListening(qrCode, false);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 </script></body></html>

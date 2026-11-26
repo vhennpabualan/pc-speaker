@@ -3,7 +3,14 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="PC Speaker"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="/style.css">
-<style>#qr{display:block;margin:16px auto 4px;width:210px;height:210px;border-radius:12px;image-rendering:pixelated}</style><title>Send PC audio</title></head><body><main>
+<style>
+  [hidden]{display:none!important}
+  #qr{display:block;margin:16px auto 4px;width:210px;height:210px;border-radius:12px;image-rendering:pixelated}
+  .session-count{font:700 56px/1 ui-monospace,Menlo,Consolas,monospace;margin:28px 0 4px;color:var(--acc)}
+  .session-label{color:var(--mut);margin:0 0 18px}
+  button.ghost{background:transparent;color:var(--fg);border:2px solid #2b3a57}
+</style><title>Send PC audio</title></head><body><main>
+<section id="pairing">
 <h1>Send PC audio</h1><p>Open this page on your PC in Chrome or Edge.</p>
 <div class="code" id="code">······</div>
 <canvas id="qr" width="210" height="210"></canvas>
@@ -11,12 +18,25 @@
 <button id="start" disabled>Share system audio</button>
 <div class="status" id="status"><span class="dot"></span><span id="msg">Connecting…</span></div>
 <small>In the share window, choose <b>Entire screen</b> and turn on <b>Share system audio</b>.</small>
+</section>
+<section id="session" hidden>
+  <h1>Audio is live</h1>
+  <p>Keep this PC tab open while listening.</p>
+  <div class="status" id="session-status"><span class="dot"></span><span id="session-msg">Waiting for connection</span></div>
+  <div class="session-count" id="device-count">0</div>
+  <p class="session-label">connected devices</p>
+  <button id="toggle-pairing" type="button" aria-expanded="false">Show pairing code</button>
+  <button id="stop-sharing" class="ghost" type="button">Stop sharing</button>
+</section>
 </main>
 <script src="/lib/peerjs.min.js"></script>
 <script src="/lib/Qrcode.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const setStatus = (t, c = '') => { $('msg').textContent = t; $('status').className = 'status ' + c; };
+const setStatus = (t, c = '') => {
+  $('msg').textContent = t; $('status').className = 'status ' + c;
+  $('session-msg').textContent = t; $('session-status').className = 'status ' + c;
+};
 // Ask for high-bitrate stereo Opus (default is mono voice-quality)
 const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000');
 
@@ -40,6 +60,7 @@ const newCode = () => String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
 function update() {
   const n = Object.keys(calls).length;
   if (!stream) return;
+  $('device-count').textContent = n;
   setStatus(n ? 'Streaming to ' + n + ' device' + (n > 1 ? 's' : '') : 'Sharing. Waiting for your iPhone…', n ? 'ok' : '');
 }
 
@@ -92,12 +113,27 @@ $('start').onclick = async () => {
   track.onended = () => {
     Object.values(calls).forEach(c => c.close());
     stream = null; $('start').disabled = false;
+    $('session').hidden = true; $('pairing').hidden = false;
+    $('toggle-pairing').textContent = 'Show pairing code';
+    $('toggle-pairing').setAttribute('aria-expanded', 'false');
+    display = null;
     setStatus('Sharing stopped.', 'bad');
   };
   stream = new MediaStream([track]);   // audio only goes to the phone
   $('start').disabled = true;
+  $('pairing').hidden = true; $('session').hidden = false;
   ids.forEach(callIt); update();
   if (!ids.size) setStatus('Sharing. Waiting for your iPhone…');
+};
+
+$('toggle-pairing').onclick = () => {
+  const opening = $('pairing').hidden;
+  $('pairing').hidden = !opening;
+  $('toggle-pairing').textContent = opening ? 'Hide pairing code' : 'Show pairing code';
+  $('toggle-pairing').setAttribute('aria-expanded', String(opening));
+};
+$('stop-sharing').onclick = () => {
+  if (display) display.getTracks().forEach(track => track.stop());
 };
 
 start(localStorage.getItem('code') || newCode());
