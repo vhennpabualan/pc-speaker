@@ -59,6 +59,15 @@ let peer, call, wake, timer, prev = null, hist = [];
 
 $('code').value = localStorage.getItem('code') || '';
 
+// Opened from the QR code on the PC: fill in the code, then one tap to start
+const qrCode = new URLSearchParams(location.search).get('code');
+if (/^\d{6}$/.test(qrCode || '')) {
+  $('code').value = qrCode;
+  localStorage.setItem('code', qrCode);
+  history.replaceState(null, '', '/receive');
+  setSetupStatus('Code filled in from QR. Tap Start listening.', 'ok');
+}
+
 function show(view) { $('setup').hidden = view !== 'setup'; $('live').hidden = view !== 'live'; }
 function setSetupStatus(t, c = '') { $('msg').textContent = t; $('status').className = 'status ' + c; }
 function setPill(t, c = '') { $('pill').textContent = t; $('pill').className = 'pill ' + c; }

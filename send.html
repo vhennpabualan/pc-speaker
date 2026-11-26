@@ -2,15 +2,18 @@
 <meta name="theme-color" content="#101826"><link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="PC Speaker"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/style.css"><title>Send PC audio</title></head><body><main>
+<link rel="stylesheet" href="/style.css">
+<style>#qr{display:block;margin:16px auto 4px;width:210px;height:210px;border-radius:12px;image-rendering:pixelated}</style><title>Send PC audio</title></head><body><main>
 <h1>Send PC audio</h1><p>Open this page on your PC in Chrome or Edge.</p>
 <div class="code" id="code">······</div>
-<p>Type this code on your iPhone.</p>
+<canvas id="qr" width="210" height="210"></canvas>
+<p>Scan with your iPhone camera, or type the code.</p>
 <button id="start" disabled>Share system audio</button>
 <div class="status" id="status"><span class="dot"></span><span id="msg">Connecting…</span></div>
 <small>In the share window, choose <b>Entire screen</b> and turn on <b>Share system audio</b>.</small>
 </main>
 <script src="/lib/peerjs.min.js"></script>
+<script src="/lib/qrcode.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const setStatus = (t, c = '') => { $('msg').textContent = t; $('status').className = 'status ' + c; };
@@ -19,6 +22,18 @@ const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;spr
 
 let peer, stream, display;
 const ids = new Set(), calls = {};
+
+function drawQR(code) {
+  const qr = qrcode(0, 'M');
+  qr.addData(location.origin + '/receive?code=' + code);
+  qr.make();
+  const n = qr.getModuleCount(), cell = 6, pad = cell * 4, size = n * cell + pad * 2;
+  const cv = $('qr'); cv.width = cv.height = size;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, size, size); g.fillStyle = '#000';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++)
+    if (qr.isDark(r, c)) g.fillRect(pad + c * cell, pad + r * cell, cell, cell);
+}
 
 const newCode = () => String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
 
@@ -41,6 +56,7 @@ function start(code) {
   peer.on('open', () => {
     localStorage.setItem('code', code);
     $('code').textContent = code;
+    drawQR(code);
     $('start').disabled = !!stream;
     if (!stream) setStatus('Ready. Click "Share system audio".');
   });
