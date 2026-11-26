@@ -1,0 +1,89 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101826"><link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PC Speaker"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="/style.css"><title>Send PC audio</title></head><body><main>
+<h1>Send PC audio</h1><p>Open this page on your PC in Chrome or Edge.</p>
+<div class="code" id="code">······</div>
+<p>Type this code on your iPhone.</p>
+<button id="start" disabled>Share system audio</button>
+<div class="status" id="status"><span class="dot"></span><span id="msg">Connecting…</span></div>
+<small>In the share window, choose <b>Entire screen</b> and turn on <b>Share system audio</b>.</small>
+</main>
+<script src="/lib/peerjs.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const setStatus = (t, c = '') => { $('msg').textContent = t; $('status').className = 'status ' + c; };
+// Ask for high-bitrate stereo Opus (default is mono voice-quality)
+const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000');
+
+let peer, stream, display;
+const ids = new Set(), calls = {};
+
+const newCode = () => String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
+
+function update() {
+  const n = Object.keys(calls).length;
+  if (!stream) return;
+  setStatus(n ? 'Streaming to ' + n + ' device' + (n > 1 ? 's' : '') : 'Sharing. Waiting for your iPhone…', n ? 'ok' : '');
+}
+
+function callIt(id) {
+  if (!stream || calls[id]) return;
+  const c = peer.call(id, stream, { sdpTransform: stereo });
+  calls[id] = c;
+  c.on('close', () => { delete calls[id]; update(); });
+  update();
+}
+
+function start(code) {
+  peer = new Peer('pcspk-' + code);
+  peer.on('open', () => {
+    localStorage.setItem('code', code);
+    $('code').textContent = code;
+    $('start').disabled = !!stream;
+    if (!stream) setStatus('Ready. Click "Share system audio".');
+  });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') { peer.destroy(); start(newCode()); }
+    else setStatus('Error: ' + e.type, 'bad');
+  });
+  peer.on('disconnected', () => peer.reconnect());
+  peer.on('connection', conn => {
+    conn.on('open', () => { ids.add(conn.peer); callIt(conn.peer); });
+    conn.on('close', () => {
+      ids.delete(conn.peer);
+      if (calls[conn.peer]) calls[conn.peer].close();
+      delete calls[conn.peer]; update();
+    });
+  });
+}
+
+$('start').onclick = async () => {
+  try {
+    display = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 1 },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 },
+      systemAudio: 'include'
+    });
+  } catch (e) { return setStatus('Sharing cancelled (' + e.name + ').', 'bad'); }
+  const track = display.getAudioTracks()[0];
+  if (!track) {
+    display.getTracks().forEach(t => t.stop());
+    return setStatus('No audio was shared. Choose Entire screen and tick "Share system audio".', 'bad');
+  }
+  track.contentHint = 'music';
+  track.onended = () => {
+    Object.values(calls).forEach(c => c.close());
+    stream = null; $('start').disabled = false;
+    setStatus('Sharing stopped.', 'bad');
+  };
+  stream = new MediaStream([track]);   // audio only goes to the phone
+  $('start').disabled = true;
+  ids.forEach(callIt); update();
+  if (!ids.size) setStatus('Sharing. Waiting for your iPhone…');
+};
+
+start(localStorage.getItem('code') || newCode());
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script></body></html>
