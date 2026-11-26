@@ -20,12 +20,29 @@
   .row b{display:block;font-size:20px}
   .row i{display:block;font-style:normal;font-size:13px;color:var(--mut)}
   button.ghost{background:transparent;color:var(--fg);border:2px solid #2b3a57}
+  #scan{display:flex;align-items:center;justify-content:center;gap:8px}
+  .camera-icon{width:20px;height:20px}
+  #scanner:not([hidden]){margin-top:14px}
+  #scanner-video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;border-radius:12px}
+  #scan-msg{margin-bottom:10px}
 </style></head><body><main>
 
 <!-- SCREEN 1: enter code -->
 <section id="setup">
   <h1>PC Speaker</h1><p>Enter the 6-digit code shown on your PC.</p>
   <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="off">
+  <button id="scan" class="ghost" type="button" aria-label="Scan QR code with camera">
+    <svg class="camera-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/>
+      <circle cx="12" cy="13" r="4"/>
+    </svg>
+    Scan QR code
+  </button>
+  <div id="scanner" hidden>
+    <video id="scanner-video" playsinline></video>
+    <p id="scan-msg" aria-live="polite">Point your camera at the QR code on your PC.</p>
+    <button id="close-scan" class="ghost" type="button">Cancel scan</button>
+  </div>
   <button id="go">Start listening</button>
   <div class="status" id="status"><span class="dot"></span><span id="msg">Not connected</span></div>
   <small>Use the volume buttons on your iPhone to change the volume.</small>
@@ -46,6 +63,7 @@
 <audio id="player" playsinline></audio>
 </main>
 <script src="/lib/peerjs.min.js"></script>
+<script src="/lib/qr-scanner.umd.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000');
@@ -56,6 +74,7 @@ const GOOD_MS = 100, BAD_MS = 180;   // colour thresholds
 
 const audio = $('player');
 let peer, call, wake, timer, prev = null, hist = [];
+let qrScanner;
 
 $('code').value = localStorage.getItem('code') || '';
 
@@ -71,6 +90,53 @@ if (/^\d{6}$/.test(qrCode || '')) {
 function show(view) { $('setup').hidden = view !== 'setup'; $('live').hidden = view !== 'live'; }
 function setSetupStatus(t, c = '') { $('msg').textContent = t; $('status').className = 'status ' + c; }
 function setPill(t, c = '') { $('pill').textContent = t; $('pill').className = 'pill ' + c; }
+
+function handleScan(result) {
+  let scanned;
+  try {
+    scanned = new URL(result.data, location.origin);
+  } catch {
+    $('scan-msg').textContent = 'That QR code is not a valid PC Speaker link. Keep scanning or enter the code manually.';
+    return;
+  }
+  const code = scanned.searchParams.get('code');
+  if (scanned.origin !== location.origin || scanned.pathname !== '/receive' || !/^\d{6}$/.test(code || '')) {
+    $('scan-msg').textContent = 'That QR code is not for this receiver. Keep scanning or enter the code manually.';
+    return;
+  }
+
+  qrScanner.stop();
+  $('scanner').hidden = true;
+  $('code').value = code;
+  localStorage.setItem('code', code);
+  setSetupStatus('Code scanned. Tap Start listening.', 'ok');
+}
+
+async function openScanner() {
+  $('scanner').hidden = false;
+  $('scan-msg').textContent = 'Point your camera at the QR code on your PC.';
+  if (!qrScanner) {
+    qrScanner = new QrScanner($('scanner-video'), handleScan, {
+      returnDetailedScanResult: true,
+      preferredCamera: 'environment'
+    });
+  }
+  try {
+    await qrScanner.start();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    $('scan-msg').textContent = 'Camera unavailable: ' + reason + '. Allow camera access, or enter the code manually.';
+    setSetupStatus('Could not start the camera.', 'bad');
+  }
+}
+
+function closeScanner() {
+  if (qrScanner) qrScanner.stop();
+  $('scanner').hidden = true;
+}
+
+$('scan').onclick = openScanner;
+$('close-scan').onclick = closeScanner;
 
 function resetStats() {
   prev = null; hist = [];
