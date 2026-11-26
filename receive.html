@@ -71,7 +71,7 @@ const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;spr
 const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 const TARGET_MS = 20;   // playback buffer; raise to 50-100 if audio crackles
 const EXTRA_MS  = 40;   // rough guess for PC capture + phone output; set 0 to show only measured delay
-const EXCELLENT_MS = 50, GOOD_MS = 100;
+const EXCELLENT_MS = 80, GOOD_MS = 100;
 
 const audio = $('player');
 let peer, call, wake, timer, prev = null, hist = [];
@@ -202,7 +202,7 @@ async function poll() {
     const q = latencyQuality(total);
     $('msbox').className = 'ms ' + q;
     $('verdict').textContent = q === 'excellent' ? 'Excellent signal (estimated)'
-      : q === 'good' ? 'Good signal (estimated)' : 'Low signal (estimated)';
+      : q === 'good' ? 'Good signal (estimated)' : 'High delay (estimated)';
   } catch (e) {}
 }
 
