@@ -25,6 +25,11 @@
   #scanner:not([hidden]){margin-top:14px}
   #scanner-video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;border-radius:12px}
   #scan-msg{margin-bottom:10px}
+  .delay-panel{margin-top:18px;text-align:left}
+  .delay-panel span{display:block;margin-bottom:8px;color:var(--mut);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+  .delay-presets{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .delay-presets button{margin:0;padding:10px 4px;font-size:14px;border:2px solid #2b3a57;background:transparent;color:var(--fg)}
+  .delay-presets button.active{background:var(--acc);border-color:var(--acc);color:#08202a}
 </style></head><body><main>
 
 <!-- SCREEN 1: enter code -->
@@ -57,6 +62,14 @@
     <div><b id="net">—</b><i>Network</i></div>
     <div><b id="buf">—</b><i>Buffer</i></div>
   </div>
+  <div class="delay-panel" role="group" aria-label="Audio delay presets">
+    <span>Delay preset</span>
+    <div class="delay-presets">
+      <button type="button" data-delay="20">Low<br><small>20 ms</small></button>
+      <button type="button" data-delay="50">Balanced<br><small>50 ms</small></button>
+      <button type="button" data-delay="100">Stable<br><small>100 ms</small></button>
+    </div>
+  </div>
   <button id="reconnect" class="ghost" hidden>Reconnect</button>
   <button id="stop" class="ghost">Disconnect</button>
 </section>
@@ -69,7 +82,6 @@
 const $ = id => document.getElementById(id);
 const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000');
 const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-const TARGET_MS = 20;   // playback buffer; raise to 50-100 if audio crackles
 const EXTRA_MS  = 40;   // rough guess for PC capture + phone output; set 0 to show only measured delay
 const EXCELLENT_MS = 80, GOOD_MS = 100;
 
@@ -97,6 +109,8 @@ const audio = $('player');
 let peer, call, wake, timer, prev = null, hist = [];
 let qrScanner;
 let connectionAttempt = 0;
+const savedDelay = Number(localStorage.getItem('pcspk-delay-ms'));
+let targetMs = [20, 50, 100].includes(savedDelay) ? savedDelay : 20;
 
 $('code').value = localStorage.getItem('code') || '';
 
@@ -184,8 +198,8 @@ document.body.addEventListener('click', () => {
 function lowLatency(c) {
   try {
     c.peerConnection.getReceivers().forEach(r => {
-      if ('jitterBufferTarget' in r) r.jitterBufferTarget = TARGET_MS;
-      if ('playoutDelayHint' in r) r.playoutDelayHint = TARGET_MS / 1000;
+      if ('jitterBufferTarget' in r) r.jitterBufferTarget = targetMs;
+      if ('playoutDelayHint' in r) r.playoutDelayHint = targetMs / 1000;
     });
   } catch (e) {}
 }
@@ -240,6 +254,22 @@ function disconnect() {
   show('setup'); setSetupStatus('Not connected');
 }
 $('stop').onclick = disconnect;
+
+function setDelayPreset(ms, persist = true) {
+  targetMs = ms;
+  if (persist) localStorage.setItem('pcspk-delay-ms', String(ms));
+  document.querySelectorAll('.delay-presets button').forEach(button => {
+    const active = Number(button.dataset.delay) === ms;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  if (call) lowLatency(call);
+}
+
+document.querySelectorAll('.delay-presets button').forEach(button => {
+  button.onclick = () => setDelayPreset(Number(button.dataset.delay));
+});
+setDelayPreset(targetMs, false);
 
 function unlockAudio() {
   audio.src = SILENT; audio.play().catch(() => {});

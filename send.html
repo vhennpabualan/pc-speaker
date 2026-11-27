@@ -12,6 +12,12 @@
   .approval{padding:18px;margin-bottom:16px;border:1px solid #52617b;border-radius:14px;background:#202d42;text-align:left}
   .approval h2{margin:0 0 6px;font-size:19px}
   .approval p{margin:0 0 12px}
+  .connection-details{text-align:left;margin-top:16px;border:1px solid #2b3a57;border-radius:14px;padding:12px 14px}
+  .connection-details summary{cursor:pointer;font-weight:700;color:var(--fg)}
+  .connection-details dl{display:grid;grid-template-columns:88px 1fr;gap:8px 10px;margin:14px 0 4px;font-size:14px}
+  .connection-details dt{color:var(--mut)}
+  .connection-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}
+  .connection-details button{margin-top:10px;padding:12px;font-size:15px}
 </style><title>Send PC audio</title></head><body><main>
 <section id="approval" class="approval" aria-labelledby="approval-title" aria-live="polite" hidden>
   <h2 id="approval-title">Allow device?</h2>
@@ -26,6 +32,15 @@
 <p>Scan with your iPhone camera, or type the code.</p>
 <button id="start" disabled>Share system audio</button>
 <div class="status" id="status"><span class="dot"></span><span id="msg">Connecting…</span></div>
+<details class="connection-details">
+  <summary>Connection details</summary>
+  <dl>
+    <dt>Pairing code</dt><dd id="pairing-code-detail">······</dd>
+    <dt>PC address</dt><dd id="pc-address-detail">—</dd>
+    <dt>Connection</dt><dd>Peer-to-peer audio</dd>
+  </dl>
+  <button class="ghost copy-link" type="button">Copy receiver link</button>
+</details>
 <small>New devices need approval; approved devices reconnect automatically. In the share window, choose <b>Entire screen</b> and turn on <b>Share system audio</b>.</small>
 </section>
 <section id="session" hidden>
@@ -34,6 +49,15 @@
   <div class="status" id="session-status"><span class="dot"></span><span id="session-msg">Waiting for connection</span></div>
   <div class="session-count" id="device-count">0</div>
   <p class="session-label">connected devices</p>
+  <details class="connection-details" open>
+    <summary>Connection details</summary>
+    <dl>
+      <dt>Pairing code</dt><dd id="session-code-detail">······</dd>
+      <dt>PC address</dt><dd id="session-address-detail">—</dd>
+      <dt>Devices</dt><dd id="session-device-detail">0 connected</dd>
+    </dl>
+    <button class="ghost copy-link" type="button">Copy receiver link</button>
+  </details>
   <button id="toggle-pairing" type="button" aria-expanded="false">Show pairing code</button>
   <button id="stop-sharing" class="ghost" type="button">Stop sharing</button>
 </section>
@@ -73,6 +97,9 @@ const newCode = () => String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
 function update() {
   const n = Object.keys(calls).length;
   $('device-count').textContent = ids.size;
+  $('session-device-detail').textContent = ids.size + ' connected';
+  $('session-address-detail').textContent = location.host;
+  $('pc-address-detail').textContent = location.host;
   if (!stream) {
     const connected = ids.size;
     setStatus(connected
@@ -200,6 +227,10 @@ function start(code) {
   peer.on('open', () => {
     localStorage.setItem('code', code);
     $('code').textContent = code;
+    $('pairing-code-detail').textContent = code;
+    $('session-code-detail').textContent = code;
+    $('session-address-detail').textContent = location.host;
+    $('pc-address-detail').textContent = location.host;
     drawQR(code);
     $('start').disabled = !!stream;
     if (!stream) setStatus('Ready. Scan the QR code or enter the code on your iPhone.');
@@ -292,6 +323,28 @@ $('toggle-pairing').onclick = () => {
   $('toggle-pairing').setAttribute('aria-expanded', String(opening));
 };
 $('stop-sharing').onclick = stopSharing;
+
+document.querySelectorAll('.copy-link').forEach(button => {
+  button.onclick = async () => {
+    const code = $('code').textContent;
+    const link = location.origin + '/receive?code=' + code;
+    try {
+      await navigator.clipboard.writeText(link);
+      button.textContent = 'Link copied';
+    } catch {
+      const input = document.createElement('textarea');
+      input.value = link;
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      input.remove();
+      button.textContent = 'Link copied';
+    }
+    setTimeout(() => { button.textContent = 'Copy receiver link'; }, 1800);
+  };
+});
 
 start(localStorage.getItem('code') || newCode());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
