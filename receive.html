@@ -10,15 +10,19 @@
   .pill{display:inline-block;padding:6px 16px;border-radius:99px;font-size:14px;font-weight:600;background:#2b3a57;color:var(--mut)}
   .pill.ok{background:rgba(79,209,197,.18);color:var(--acc)}
   .pill.bad{background:rgba(255,123,123,.18);color:var(--bad)}
-  .ms{margin:26px 0 4px;display:flex;justify-content:center;align-items:baseline;gap:6px}
-  .ms b{font:700 76px/1 ui-monospace,Menlo,Consolas,monospace}
-  .ms span{font-size:24px;color:var(--mut)}
-  .ms.excellent b{color:var(--acc)} .ms.good b{color:#f5c542} .ms.low b{color:var(--bad)}
-  #verdict{margin:0 0 20px}
-  .row{display:flex;gap:10px}
-  .row div{flex:1;background:var(--bg);border-radius:12px;padding:10px}
-  .row b{display:block;font-size:20px}
-  .row i{display:block;font-style:normal;font-size:13px;color:var(--mut)}
+  .audio-indicator{height:112px;margin:18px 0 4px;display:flex;justify-content:center;align-items:center;gap:7px}
+  .audio-indicator i{display:block;width:8px;height:20px;border-radius:99px;background:var(--mut);transform:scaleY(.45);animation:sync-bounce .85s ease-in-out infinite alternate;animation-play-state:paused}
+  .audio-indicator i:nth-child(2){animation-delay:-.22s}
+  .audio-indicator i:nth-child(3){animation-delay:-.48s}
+  .audio-indicator i:nth-child(4){animation-delay:-.12s}
+  .audio-indicator i:nth-child(5){animation-delay:-.36s}
+  .audio-indicator.active i{background:var(--acc);animation-play-state:running}
+  .audio-indicator.good i{background:var(--amber)}
+  .audio-indicator.low i{background:var(--bad)}
+  .audio-indicator.idle i{opacity:.55}
+  @keyframes sync-bounce{from{transform:scaleY(.45)}to{transform:scaleY(1.7)}}
+  @media (prefers-reduced-motion:reduce){.audio-indicator i{animation:none;transform:none}}
+  #verdict{margin:0 0 20px;min-height:24px}
   button.ghost{background:transparent;color:var(--fg);border:2px solid #2b3a57}
   #scan{display:flex;align-items:center;justify-content:center;gap:8px}
   .camera-icon{width:20px;height:20px}
@@ -26,7 +30,7 @@
   #scanner-video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;border-radius:12px}
   #scan-msg{margin-bottom:10px}
   .delay-panel{margin-top:18px;text-align:left}
-  .delay-panel span{display:block;margin-bottom:8px;color:var(--mut);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+  .delay-panel>span{display:block;margin-bottom:8px;color:var(--mut);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
   .delay-presets{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
   .delay-presets button{min-height:48px;margin:0;padding:10px 4px;font-size:14px;border:2px solid #2b3a57;background:transparent;color:var(--fg)}
   .delay-presets button.active{background:var(--acc);border-color:var(--acc);color:#08202a}
@@ -63,21 +67,19 @@
 <!-- SCREEN 2: connected -->
 <section id="live" hidden>
   <span class="pill" id="pill" role="status" aria-live="polite">Connecting…</span>
-  <div class="ms" id="msbox" role="status" aria-live="polite"><b id="ms">—</b><span>ms</span></div>
-  <p id="verdict">Estimated end-to-end delay</p>
-  <div class="row">
-    <div><b id="net">—</b><i>Network</i></div>
-    <div><b id="buf">—</b><i>Buffer</i></div>
+  <div class="audio-indicator idle" id="sync-indicator" aria-hidden="true">
+    <i></i><i></i><i></i><i></i><i></i>
   </div>
+  <p id="verdict" role="status" aria-live="polite">Waiting for audio…</p>
   <div class="delay-panel" role="group" aria-label="Audio delay presets">
     <span>Delay preset</span>
     <div class="delay-presets">
-      <button type="button" data-delay="20">Balanced<br><small>20 ms</small></button>
-      <button type="button" data-delay="100">Stable<br><small>100 ms</small></button>
+      <button type="button" data-delay="20">Balanced</button>
+      <button type="button" data-delay="100">Stable</button>
     </div>
     <div class="delay-descriptions" aria-hidden="true">
-      <span>Lower delay<br>May crackle</span>
-      <span>More buffer<br>More stable</span>
+      <span>Lower delay · may crackle</span>
+      <span>More stable · more delay</span>
     </div>
   </div>
   <button id="reconnect" class="ghost" hidden>Reconnect</button>
@@ -193,8 +195,8 @@ $('close-scan').onclick = closeScanner;
 
 function resetStats() {
   prev = null; hist = [];
-  $('ms').textContent = '—'; $('net').textContent = '—'; $('buf').textContent = '—';
-  $('msbox').className = 'ms'; $('verdict').textContent = 'Estimated end-to-end delay';
+  $('sync-indicator').className = 'audio-indicator idle';
+  $('verdict').textContent = 'Waiting for audio…';
 }
 
 async function keepAwake() { try { wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
@@ -241,13 +243,10 @@ async function poll() {
     if (hist.length > 3) hist.shift();
     const total = Math.round(hist.reduce((a, b) => a + b, 0) / hist.length);
 
-    $('ms').textContent = total;
-    $('net').textContent = net != null ? Math.round(net) + ' ms' : '—';
-    $('buf').textContent = buf != null ? Math.round(buf) + ' ms' : '—';
     const q = latencyQuality(total);
-    $('msbox').className = 'ms ' + q;
-    $('verdict').textContent = q === 'excellent' ? 'Excellent signal (estimated)'
-      : q === 'good' ? 'Good signal (estimated)' : 'High delay (estimated)';
+    $('sync-indicator').className = 'audio-indicator active ' + q;
+    $('verdict').textContent = q === 'excellent' ? 'Audio is in sync'
+      : q === 'good' ? 'Connection is steady' : 'Audio may stutter';
   } catch (e) {}
 }
 
@@ -350,6 +349,8 @@ function startListening(code, unlock = true) {
     c.on('stream', s => {
       if (attempt !== connectionAttempt) return;
       audio.srcObject = s;
+      $('sync-indicator').className = 'audio-indicator active';
+      $('verdict').textContent = 'Audio is playing';
       audio.play().then(() => setPill('Connected · playing', 'ok'))
                   .catch(() => setPill('Tap the screen to start', 'bad'));
       $('reconnect').hidden = true;
