@@ -14,6 +14,8 @@ Closing the window keeps PC Speaker in the Windows system tray. Use **Show PC Sp
 
 The app sizes its initial window to the available display area and tightens page spacing on shorter windows. New device approval requests appear as a focused modal dialog.
 
+Launching PC Speaker again while it is already running brings the existing window to the front. The app shows an offline retry page if the hosted `/send` page cannot load within 15 seconds.
+
 ## Build the Windows installer
 
 From this folder:
@@ -29,6 +31,7 @@ To uninstall, use Windows **Settings > Apps > Installed apps**, find **PC Speake
 ## Troubleshooting
 
 - If `/send` does not load, check your internet connection and confirm `https://pc-speaker.vercel.app/send` is reachable.
+- If the window is hidden, reopen it from the PC Speaker tray icon or launch the app again.
 - If no sharing starts, confirm Windows has allowed screen capture and audio loopback for Electron.
 - If the page is replaced by the offline screen, click **Retry** after internet is restored.
 - For a clean rebuild, delete `dist/` and run `npm run dist` again.

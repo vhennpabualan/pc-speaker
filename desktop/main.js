@@ -3,6 +3,7 @@ const path = require('node:path');
 
 const SITE_URL = 'https://pc-speaker.vercel.app/send';
 const SITE_ORIGIN = new URL(SITE_URL).origin;
+const PAGE_LOAD_TIMEOUT_MS = 15000;
 const DESKTOP_UI_CSS = `
   @media (max-height: 820px) {
     body { padding-top: 8px !important; padding-bottom: 8px !important; }
@@ -69,44 +70,81 @@ const DESKTOP_UI_CSS = `
 let mainWindow;
 let tray;
 let isQuitting = false;
+let pageLoadTimeout;
+let showingOffline = false;
 
 function showWindow() {
-  if (!mainWindow) createWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
+  if (!mainWindow.isVisible()) mainWindow.show();
   mainWindow.focus();
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
-  tray = new Tray(icon);
-  tray.setToolTip('PC Speaker');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Show PC Speaker', click: showWindow },
-    { type: 'separator' },
-    {
-      label: 'Quit',
-      click: () => {
-        isQuitting = true;
-        app.quit();
-      }
+  if (tray) return;
+
+  try {
+    const iconPath = path.join(__dirname, 'build', 'icon.png');
+    const icon = nativeImage.createFromPath(iconPath);
+    if (icon.isEmpty()) {
+      console.error('Could not create the PC Speaker tray icon:', iconPath);
+      return;
     }
-  ]));
-  tray.on('click', showWindow);
+
+    tray = new Tray(icon);
+    tray.setToolTip('PC Speaker');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Show PC Speaker', click: showWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ]));
+    tray.on('click', showWindow);
+  } catch (error) {
+    tray = null;
+    console.error('Could not create the PC Speaker tray icon:', error);
+  }
+}
+
+function clearPageLoadTimeout() {
+  clearTimeout(pageLoadTimeout);
+  pageLoadTimeout = null;
+}
+
+function startPageLoadTimeout() {
+  clearPageLoadTimeout();
+  const loadingWindow = mainWindow;
+  pageLoadTimeout = setTimeout(() => {
+    if (!loadingWindow || loadingWindow.isDestroyed() || mainWindow !== loadingWindow) return;
+    console.error('PC Speaker page load timed out.');
+    showOffline();
+  }, PAGE_LOAD_TIMEOUT_MS);
 }
 
 function showOffline() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed() || showingOffline) return;
+  clearPageLoadTimeout();
+  showingOffline = true;
   mainWindow.loadFile(path.join(__dirname, 'offline.html'), {
     query: { target: SITE_URL }
+  }).catch(error => {
+    showingOffline = false;
+    console.error('Could not show the offline page:', error);
   });
 }
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
   mainWindow = new BrowserWindow({
     width: Math.min(1000, Math.max(320, screenWidth - 80)),
     height: Math.min(900, Math.max(400, screenHeight - 80)),
+    backgroundColor: '#0b1220',
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
@@ -116,7 +154,17 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
-    if (new URL(navigationUrl).origin !== SITE_ORIGIN) event.preventDefault();
+    try {
+      if (new URL(navigationUrl).origin !== SITE_ORIGIN) {
+        event.preventDefault();
+        return;
+      }
+      showingOffline = false;
+      startPageLoadTimeout();
+    } catch (error) {
+      event.preventDefault();
+      console.error('Blocked an invalid navigation URL:', error);
+    }
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -127,6 +175,8 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
+    clearPageLoadTimeout();
+    if (mainWindow.webContents.getURL() === SITE_URL) showingOffline = false;
     mainWindow.webContents.insertCSS(DESKTOP_UI_CSS).catch(error => {
       console.error('Could not apply desktop layout styles:', error);
     });
@@ -185,23 +235,30 @@ function createWindow() {
     });
   });
 
-  mainWindow.webContents.on('did-fail-load', (event, errorCode) => {
-    if (errorCode === -3) return;
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (errorCode === -3 || !isMainFrame) return;
+    console.error('PC Speaker page failed to load:', errorCode, errorDescription, validatedURL);
     showOffline();
   });
 
   mainWindow.on('closed', () => {
+    clearPageLoadTimeout();
     mainWindow = null;
   });
 
   mainWindow.on('close', event => {
-    if (!isQuitting) {
+    if (!isQuitting && tray) {
       event.preventDefault();
       mainWindow.hide();
     }
   });
 
-  mainWindow.loadURL(SITE_URL).catch(showOffline);
+  startPageLoadTimeout();
+  mainWindow.loadURL(SITE_URL).catch(error => {
+    console.error('Could not load the PC Speaker page:', error);
+    showOffline();
+  });
+  return mainWindow;
 }
 
 const singleInstance = app.requestSingleInstanceLock();
@@ -209,13 +266,9 @@ if (!singleInstance) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (!mainWindow) {
-      createWindow();
-      createTray();
-      return;
-    }
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    app.whenReady().then(showWindow).catch(error => {
+      console.error('Could not reopen the PC Speaker window:', error);
+    });
   });
 
   app.whenReady().then(() => {
@@ -227,18 +280,27 @@ if (!singleInstance) {
     });
 
     session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
-      const sources = await desktopCapturer.getSources({ types: ['screen'] });
-      if (sources.length === 0) {
+      try {
+        const sources = await desktopCapturer.getSources({ types: ['screen'] });
+        if (sources.length === 0) {
+          callback(null);
+          return;
+        }
+        callback({
+          video: { id: sources[0].id, name: sources[0].name },
+          audio: 'loopback'
+        });
+      } catch (error) {
+        console.error('Could not enumerate screens for audio capture:', error);
         callback(null);
-        return;
       }
-      callback({
-        video: { id: sources[0].id, name: sources[0].name },
-        audio: 'loopback'
-      });
     });
 
+    createTray();
     createWindow();
+  }).catch(error => {
+    console.error('Could not initialize PC Speaker:', error);
+    app.quit();
   });
 }
 
@@ -247,7 +309,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  showWindow();
 });
 
 app.on('before-quit', () => {
