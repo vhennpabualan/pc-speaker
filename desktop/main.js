@@ -1,4 +1,5 @@
-const { app, BrowserWindow, desktopCapturer, Menu, nativeImage, screen, session, shell, Tray } = require('electron');
+const { app, BrowserWindow, desktopCapturer, dialog, Menu, nativeImage, screen, session, shell, Tray } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('node:path');
 
 const SITE_URL = 'https://pc-speaker.vercel.app/send';
@@ -72,6 +73,9 @@ let tray;
 let isQuitting = false;
 let pageLoadTimeout;
 let showingOffline = false;
+let updateStatus = 'idle';
+let updateProgress = 0;
+let manualUpdateCheck = false;
 
 function showWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
@@ -80,11 +84,143 @@ function showWindow() {
   mainWindow.focus();
 }
 
+function quitApp() {
+  isQuitting = true;
+  app.quit();
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  const updateLabel = updateStatus === 'checking' ? 'Checking for updates...'
+    : updateStatus === 'downloading' ? 'Downloading update (' + updateProgress + '%)'
+    : updateStatus === 'downloaded' ? 'Install update and restart'
+    : 'Check for updates';
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show PC Speaker', click: showWindow },
+    { type: 'separator' },
+    {
+      label: updateLabel,
+      enabled: !['checking', 'downloading'].includes(updateStatus),
+      click: () => {
+        if (updateStatus === 'downloaded') autoUpdater.quitAndInstall();
+        else checkForUpdates(true);
+      }
+    },
+    { type: 'separator' },
+    { label: 'Exit PC Speaker', click: quitApp }
+  ]));
+  tray.setToolTip(updateStatus === 'downloaded'
+    ? 'PC Speaker update ready to install' : 'PC Speaker');
+}
+
+function reportUpdateError(error) {
+  const notifyUser = manualUpdateCheck;
+  manualUpdateCheck = false;
+  updateStatus = 'idle';
+  updateProgress = 0;
+  refreshTrayMenu();
+  console.error('PC Speaker update check failed:', error);
+  if (notifyUser) {
+    dialog.showMessageBox({
+      type: 'error',
+      title: 'Update check failed',
+      message: 'PC Speaker could not check for or download an update.',
+      detail: error.message
+    }).catch(dialogError => {
+      console.error('Could not show the update error:', dialogError);
+    });
+  }
+}
+
+function checkForUpdates(manual = false) {
+  if (!app.isPackaged) {
+    if (manual) {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Updates unavailable',
+        message: 'Update checks are available in the installed app.'
+      }).catch(error => {
+        console.error('Could not show the update message:', error);
+      });
+    }
+    return;
+  }
+  if (['checking', 'downloading', 'downloaded'].includes(updateStatus)) return;
+
+  manualUpdateCheck = manual;
+  updateStatus = 'checking';
+  updateProgress = 0;
+  refreshTrayMenu();
+  autoUpdater.checkForUpdates().catch(error => {
+    if (updateStatus !== 'idle') reportUpdateError(error);
+  });
+}
+
+function setupAutoUpdater() {
+  if (!app.isPackaged) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('update-available', info => {
+    console.log('PC Speaker update available:', info.version);
+    updateStatus = 'downloading';
+    updateProgress = 0;
+    refreshTrayMenu();
+  });
+  autoUpdater.on('update-not-available', info => {
+    const notifyUser = manualUpdateCheck;
+    manualUpdateCheck = false;
+    updateStatus = 'idle';
+    updateProgress = 0;
+    refreshTrayMenu();
+    console.log('PC Speaker is up to date:', info.version);
+    if (notifyUser) {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'No updates available',
+        message: 'PC Speaker is up to date.',
+        detail: 'Installed version: ' + app.getVersion()
+      }).catch(error => {
+        console.error('Could not show the update status:', error);
+      });
+    }
+  });
+  autoUpdater.on('download-progress', progress => {
+    const percent = Math.floor(progress.percent);
+    if (percent === updateProgress) return;
+    updateProgress = percent;
+    refreshTrayMenu();
+  });
+  autoUpdater.on('update-downloaded', info => {
+    manualUpdateCheck = false;
+    updateStatus = 'downloaded';
+    updateProgress = 100;
+    refreshTrayMenu();
+    console.log('PC Speaker update downloaded:', info.version);
+    if (tray && process.platform === 'win32') {
+      tray.displayBalloon({
+        title: 'PC Speaker update ready',
+        content: 'Right-click the tray icon and choose Install update and restart.'
+      });
+    }
+  });
+  autoUpdater.on('error', error => {
+    if (updateStatus !== 'idle') reportUpdateError(error);
+    else console.error('PC Speaker updater error:', error);
+  });
+
+  checkForUpdates();
+  const updateCheckTimer = setInterval(() => checkForUpdates(), 6 * 60 * 60 * 1000);
+  updateCheckTimer.unref();
+}
+
 function createTray() {
   if (tray) return;
 
   try {
-    const iconPath = path.join(__dirname, 'build', 'icon.png');
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'tray-icon.png')
+      : path.join(__dirname, 'build', 'icon.png');
     const icon = nativeImage.createFromPath(iconPath);
     if (icon.isEmpty()) {
       console.error('Could not create the PC Speaker tray icon:', iconPath);
@@ -93,17 +229,7 @@ function createTray() {
 
     tray = new Tray(icon);
     tray.setToolTip('PC Speaker');
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Show PC Speaker', click: showWindow },
-      { type: 'separator' },
-      {
-        label: 'Quit',
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        }
-      }
-    ]));
+    refreshTrayMenu();
     tray.on('click', showWindow);
   } catch (error) {
     tray = null;
@@ -246,6 +372,10 @@ function createWindow() {
     mainWindow = null;
   });
 
+  mainWindow.on('minimize', () => {
+    if (tray && !mainWindow.isDestroyed()) mainWindow.hide();
+  });
+
   mainWindow.on('close', event => {
     if (!isQuitting && tray) {
       event.preventDefault();
@@ -298,6 +428,7 @@ if (!singleInstance) {
 
     createTray();
     createWindow();
+    setupAutoUpdater();
   }).catch(error => {
     console.error('Could not initialize PC Speaker:', error);
     app.quit();

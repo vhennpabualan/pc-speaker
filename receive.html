@@ -10,6 +10,8 @@
   .pill{display:inline-block;padding:6px 16px;border-radius:99px;font-size:14px;font-weight:600;background:#2b3a57;color:var(--mut)}
   .pill.ok{background:rgba(79,209,197,.18);color:var(--acc)}
   .pill.bad{background:rgba(255,123,123,.18);color:var(--bad)}
+  .channel-route{margin:12px 0 0;padding:10px 12px;border:1px solid #2b3a57;border-radius:12px;background:rgba(11,18,32,.5);color:var(--mut);font-size:14px;font-weight:700}
+  .channel-route.assigned{border-color:rgba(85,219,201,.45);color:var(--acc)}
   .audio-indicator{height:112px;margin:18px 0 4px;display:flex;justify-content:center;align-items:center;gap:7px}
   .audio-indicator i{display:block;width:8px;height:20px;border-radius:99px;background:var(--mut);transform:scaleY(.45);animation:sync-bounce .85s ease-in-out infinite alternate;animation-play-state:paused}
   .audio-indicator i:nth-child(2){animation-delay:-.22s}
@@ -67,6 +69,7 @@
 <!-- SCREEN 2: connected -->
 <section id="live" hidden>
   <span class="pill" id="pill" role="status" aria-live="polite">Connecting…</span>
+  <p class="channel-route" id="channel-route" role="status" aria-live="polite">Waiting for channel assignment from PC</p>
   <div class="audio-indicator idle" id="sync-indicator" aria-hidden="true">
     <i></i><i></i><i></i><i></i><i></i>
   </div>
@@ -119,6 +122,7 @@ const deviceId = getDeviceId();
 const deviceLabel = getDeviceLabel();
 const audio = $('player');
 let peer, call, dataConnection, wake, timer, prev = null, hist = [];
+let channelMode = null;
 let qrScanner;
 let connectionAttempt = 0;
 const savedDelay = Number(localStorage.getItem('pcspk-delay-ms'));
@@ -137,6 +141,17 @@ if (/^\d{6}$/.test(qrCode || '')) {
 function show(view) { $('setup').hidden = view !== 'setup'; $('live').hidden = view !== 'live'; }
 function setSetupStatus(t, c = '') { $('msg').textContent = t; $('status').className = 'status ' + c; }
 function setPill(t, c = '') { $('pill').textContent = t; $('pill').className = 'pill ' + c; }
+
+function setChannelMode(mode) {
+  if (mode !== null && !['stereo', 'left', 'right'].includes(mode)) return;
+  channelMode = mode;
+  const indicator = $('channel-route');
+  indicator.className = 'channel-route' + (mode ? ' assigned' : '');
+  indicator.textContent = mode === 'left' ? 'This phone receives: LEFT (sent to both output channels)'
+    : mode === 'right' ? 'This phone receives: RIGHT (sent to both output channels)'
+    : mode === 'stereo' ? 'This phone receives: Stereo (left + right)'
+    : 'Waiting for channel assignment from PC';
+}
 
 function latencyQuality(ms) {
   if (ms < EXCELLENT_MS) return 'excellent';
@@ -257,6 +272,7 @@ function disconnect() {
   connectionAttempt++;
   clearInterval(timer); timer = null;
   dataConnection = null;
+  setChannelMode(null);
   if (peer) peer.destroy();
   peer = null; call = null;
   audio.pause(); audio.srcObject = null;
@@ -298,6 +314,7 @@ function startListening(code, unlock = true) {
   $('go').disabled = true;
 
   resetStats();
+  setChannelMode(null);
   $('reconnect').hidden = true;
   setPill('Connecting…'); show('live');
   if (peer) peer.destroy();
@@ -331,6 +348,10 @@ function startListening(code, unlock = true) {
     });
     conn.on('data', message => {
       if (attempt !== connectionAttempt) return;
+      if (message && message.type === 'channel-mode') {
+        if (['stereo', 'left', 'right'].includes(message.mode)) setChannelMode(message.mode);
+        return;
+      }
       if (!message || message.type !== 'approval') return;
       if (!['waiting', 'approved', 'declined'].includes(message.status)) return;
       showApprovalStatus(message.status);
@@ -338,6 +359,7 @@ function startListening(code, unlock = true) {
     conn.on('close', () => {
       if (attempt !== connectionAttempt) return;
       if (dataConnection === conn) dataConnection = null;
+      setChannelMode(null);
       if (approvalStatus === 'declined') {
         setPill('Declined by PC', 'bad');
         $('reconnect').hidden = true;

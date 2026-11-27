@@ -1,12 +1,13 @@
 {
   "name": "pc-speaker",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Windows desktop host for PC Speaker",
   "private": true,
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.pcspeaker.app",
@@ -14,8 +15,22 @@
     "directories": {
       "output": "dist"
     },
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "tray-icon.png"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "vhennpabualan",
+        "repo": "pc-speaker"
+      }
+    ],
     "win": {
       "icon": "build/icon.png",
+      "verifyUpdateCodeSignature": false,
       "target": [
         {
           "target": "nsis",
@@ -29,5 +44,8 @@
   "devDependencies": {
     "electron": "45.5.0",
     "electron-builder": "26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
   }
 }

@@ -105,6 +105,7 @@ let peer, stream, display, audioContext, audioSource;
 let autoAlign = true;
 const ids = new Set(), calls = {};
 const pendingConnections = [], connectionStates = new Map(), knownPeers = new Set();
+const deviceConnections = new Map();
 const approvedDeviceIds = new Set();
 let approvalStorageKey = '';
 
@@ -233,6 +234,7 @@ function addDeviceRow(conn, state) {
     if (state.deviceId)
       localStorage.setItem('pcspk-device-channel-mode-' + state.deviceId, state.channelMode);
     routeDeviceChannels(state);
+    sendDeviceChannelMode(state);
   };
   channelLabel.appendChild(channelSelect);
   row.appendChild(channelLabel);
@@ -282,6 +284,11 @@ function routeDeviceChannels(state) {
     state.channelSplitter.connect(state.channelMerger, 0, 0);
     state.channelSplitter.connect(state.channelMerger, 1, 1);
   }
+}
+
+function sendDeviceChannelMode(state) {
+  if (state.connection && state.connection.open)
+    state.connection.send({ type: 'channel-mode', mode: state.channelMode });
 }
 
 function createDeviceStream(state) {
@@ -387,6 +394,7 @@ function activateConnection(conn, state) {
   state.active = true;
   ids.add(conn.peer);
   addDeviceRow(conn, state);
+  sendDeviceChannelMode(state);
   callIt(conn.peer);
   update();
 }
@@ -488,12 +496,18 @@ function start(code) {
     if (knownPeers.has(conn.peer)) { conn.close(); return; }
     knownPeers.add(conn.peer);
     const device = getDeviceDetails(conn);
+    if (device.deviceId) {
+      const previousConnection = deviceConnections.get(device.deviceId);
+      if (previousConnection && previousConnection !== conn) previousConnection.close();
+      deviceConnections.set(device.deviceId, conn);
+    }
     const state = {
       approved: !!device.deviceId && approvedDeviceIds.has(device.deviceId),
       open: false,
       active: false,
       declined: false,
       declineTimer: null,
+      connection: conn,
       deviceId: device.deviceId,
       deviceLabel: device.deviceLabel,
       reportedMs: null,
@@ -542,6 +556,8 @@ function start(code) {
         if (state.row) state.row.remove();
       }
       knownPeers.delete(conn.peer);
+      if (state.deviceId && deviceConnections.get(state.deviceId) === conn)
+        deviceConnections.delete(state.deviceId);
       connectionStates.delete(conn);
       updateDeviceDelays();
       update();
