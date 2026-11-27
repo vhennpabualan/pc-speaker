@@ -12,6 +12,8 @@ The app opens the hosted PC Speaker `/send` page in its own window. Click **Shar
 
 Closing the window keeps PC Speaker in the Windows system tray. Use **Show PC Speaker** or double-click the tray icon to reopen it, and use **Quit** to exit completely.
 
+The app sizes its initial window to the available display area and tightens page spacing on shorter windows. New device approval requests appear as a focused modal dialog.
+
 ## Build the Windows installer
 
 From this folder:
