@@ -1,10 +1,37 @@
-const { app, BrowserWindow, desktopCapturer, session, shell } = require('electron');
+const { app, BrowserWindow, desktopCapturer, Menu, nativeImage, session, shell, Tray } = require('electron');
 const path = require('node:path');
 
 const SITE_URL = 'https://pc-speaker.vercel.app/send';
 const SITE_ORIGIN = new URL(SITE_URL).origin;
 
 let mainWindow;
+let tray;
+let isQuitting = false;
+
+function showWindow() {
+  if (!mainWindow) createWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
+  tray = new Tray(icon);
+  tray.setToolTip('PC Speaker');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show PC Speaker', click: showWindow },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]));
+  tray.on('click', showWindow);
+}
 
 function showOffline() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -45,6 +72,13 @@ function createWindow() {
     mainWindow = null;
   });
 
+  mainWindow.on('close', event => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.loadURL(SITE_URL).catch(showOffline);
 }
 
@@ -55,6 +89,7 @@ if (!singleInstance) {
   app.on('second-instance', () => {
     if (!mainWindow) {
       createWindow();
+      createTray();
       return;
     }
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -91,4 +126,8 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
 });

@@ -10,6 +10,8 @@ npm start
 
 The app opens the hosted PC Speaker `/send` page in its own window. Click **Share system audio** to start capture.
 
+Closing the window keeps PC Speaker in the Windows system tray. Use **Show PC Speaker** or double-click the tray icon to reopen it, and use **Quit** to exit completely.
+
 ## Build the Windows installer
 
 From this folder:
