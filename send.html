@@ -27,6 +27,9 @@
   .live-label::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--acc);margin-right:7px}
   .device-delays{margin-top:20px;text-align:left}
   .device-delay-row{padding:14px;margin:10px 0;border:1px solid #2b3a57;border-radius:14px;background:rgba(11,18,32,.34)}
+  main:has(#session:not([hidden])){max-width:1040px}
+  .device-delays{display:flex;gap:12px;overflow-x:auto;overscroll-behavior-x:contain;padding:2px 2px 12px;scroll-snap-type:x proximity}
+  .device-delay-row{flex:0 0 280px;margin:0;scroll-snap-align:start}
   .device-delay-heading{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
   .device-delay-name{font-weight:800}
   .device-delay-id{color:var(--mut);font:12px ui-monospace,Menlo,Consolas,monospace}
@@ -37,6 +40,7 @@
   .device-channel-label{display:block;margin-top:12px;color:var(--mut);font-size:13px;font-weight:700}
   .device-channel-select{display:block;width:100%;margin-top:6px;padding:10px;border:1px solid #2b3a57;border-radius:8px;background:#101826;color:var(--fg)}
   .auto-align-toggle{display:flex;align-items:center;gap:8px;margin:18px 0 8px;font-weight:700}
+  @media(max-width:480px){.device-delay-row{flex-basis:min(280px,calc(100vw - 76px))}}
 </style><title>Send PC audio</title></head><body><main>
 <section id="approval" class="approval" aria-labelledby="approval-title" aria-live="polite" hidden>
   <h2 id="approval-title">Allow device?</h2>
