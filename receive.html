@@ -118,7 +118,7 @@ function getDeviceLabel() {
 const deviceId = getDeviceId();
 const deviceLabel = getDeviceLabel();
 const audio = $('player');
-let peer, call, wake, timer, prev = null, hist = [];
+let peer, call, dataConnection, wake, timer, prev = null, hist = [];
 let qrScanner;
 let connectionAttempt = 0;
 const savedDelay = Number(localStorage.getItem('pcspk-delay-ms'));
@@ -243,6 +243,9 @@ async function poll() {
     if (hist.length > 3) hist.shift();
     const total = Math.round(hist.reduce((a, b) => a + b, 0) / hist.length);
 
+    if (dataConnection && dataConnection.open)
+      dataConnection.send({ type: 'stats', ms: total });
+
     const q = latencyQuality(total);
     $('sync-indicator').className = 'audio-indicator active ' + q;
     $('verdict').textContent = q === 'excellent' ? 'Audio is in sync'
@@ -253,6 +256,7 @@ async function poll() {
 function disconnect() {
   connectionAttempt++;
   clearInterval(timer); timer = null;
+  dataConnection = null;
   if (peer) peer.destroy();
   peer = null; call = null;
   audio.pause(); audio.srcObject = null;
@@ -306,6 +310,7 @@ function startListening(code, unlock = true) {
       reliable: true,
       metadata: { deviceId, deviceLabel }
     });
+    dataConnection = conn;
     let approvalStatus = 'waiting';
     const showApprovalStatus = status => {
       approvalStatus = status;
@@ -332,6 +337,7 @@ function startListening(code, unlock = true) {
     });
     conn.on('close', () => {
       if (attempt !== connectionAttempt) return;
+      if (dataConnection === conn) dataConnection = null;
       if (approvalStatus === 'declined') {
         setPill('Declined by PC', 'bad');
         $('reconnect').hidden = true;

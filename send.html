@@ -25,6 +25,18 @@
   .session-header h1{margin:0}
   .live-label{color:var(--acc);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.12em}
   .live-label::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--acc);margin-right:7px}
+  .device-delays{margin-top:20px;text-align:left}
+  .device-delay-row{padding:14px;margin:10px 0;border:1px solid #2b3a57;border-radius:14px;background:rgba(11,18,32,.34)}
+  .device-delay-heading{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+  .device-delay-name{font-weight:800}
+  .device-delay-id{color:var(--mut);font:12px ui-monospace,Menlo,Consolas,monospace}
+  .device-delay-values{display:flex;justify-content:space-between;gap:12px;margin:8px 0;color:var(--mut);font-size:13px}
+  .device-delay-values output{color:var(--fg);font-weight:700}
+  .device-trim-label{display:block;color:var(--mut);font-size:13px;font-weight:700}
+  .device-trim-slider{display:block;width:100%;margin:10px 0 0;accent-color:var(--acc)}
+  .device-channel-label{display:block;margin-top:12px;color:var(--mut);font-size:13px;font-weight:700}
+  .device-channel-select{display:block;width:100%;margin-top:6px;padding:10px;border:1px solid #2b3a57;border-radius:8px;background:#101826;color:var(--fg)}
+  .auto-align-toggle{display:flex;align-items:center;gap:8px;margin:18px 0 8px;font-weight:700}
 </style><title>Send PC audio</title></head><body><main>
 <section id="approval" class="approval" aria-labelledby="approval-title" aria-live="polite" hidden>
   <h2 id="approval-title">Allow device?</h2>
@@ -58,6 +70,8 @@
   <div class="status" id="session-status" role="status" aria-live="polite"><span class="dot"></span><span id="session-msg">Waiting for connection</span></div>
   <div class="session-count" id="device-count">0</div>
   <p class="session-label">connected devices</p>
+  <label class="auto-align-toggle"><input id="auto-align" type="checkbox" checked> Auto-align devices</label>
+  <div class="device-delays" id="device-delays" aria-label="Connected device audio delays"></div>
   <details class="connection-details" open>
     <summary>Connection details</summary>
     <dl>
@@ -83,7 +97,8 @@ const setStatus = (t, c = '') => {
 // Ask for high-bitrate stereo Opus (default is mono voice-quality)
 const stereo = sdp => sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=192000');
 
-let peer, stream, display;
+let peer, stream, display, audioContext, audioSource;
+let autoAlign = true;
 const ids = new Set(), calls = {};
 const pendingConnections = [], connectionStates = new Map(), knownPeers = new Set();
 const approvedDeviceIds = new Set();
@@ -119,11 +134,216 @@ function update() {
   setStatus(n ? 'Streaming to ' + n + ' device' + (n > 1 ? 's' : '') : 'Sharing. Waiting for your iPhone…', n ? 'ok' : '');
 }
 
+function getSavedTrimMs(deviceId) {
+  if (!deviceId) return 0;
+  const saved = localStorage.getItem('pcspk-device-trim-ms-' + deviceId);
+  const trim = saved === null ? 0 : Number(saved);
+  return Number.isInteger(trim) && trim >= -150 && trim <= 150 && trim % 5 === 0
+    ? trim : 0;
+}
+
+function getSavedChannelMode(deviceId) {
+  if (!deviceId) return 'stereo';
+  const saved = localStorage.getItem('pcspk-device-channel-mode-' + deviceId);
+  return ['left', 'right'].includes(saved) ? saved : 'stereo';
+}
+
+function updateDeviceRow(state) {
+  if (!state.reportedValue) return;
+  state.reportedValue.textContent = Number.isFinite(state.reportedMs)
+    ? state.reportedMs + ' ms' : 'Waiting for report';
+  state.delayValue.textContent = state.appliedDelayMs + ' ms';
+}
+
+function addDeviceRow(conn, state) {
+  const row = document.createElement('div');
+  row.className = 'device-delay-row';
+  row.setAttribute('aria-label', state.deviceLabel + ' audio delay controls');
+
+  const heading = document.createElement('div');
+  heading.className = 'device-delay-heading';
+  const name = document.createElement('span');
+  name.className = 'device-delay-name';
+  name.textContent = state.deviceLabel;
+  const deviceId = document.createElement('span');
+  deviceId.className = 'device-delay-id';
+  deviceId.textContent = (state.deviceId || conn.peer).slice(-6).toUpperCase();
+  heading.append(name, deviceId);
+  row.appendChild(heading);
+
+  const values = document.createElement('div');
+  values.className = 'device-delay-values';
+  const reported = document.createElement('span');
+  reported.textContent = 'Reported: ';
+  state.reportedValue = document.createElement('output');
+  reported.appendChild(state.reportedValue);
+  const added = document.createElement('span');
+  added.textContent = 'Added delay: ';
+  state.delayValue = document.createElement('output');
+  added.appendChild(state.delayValue);
+  values.append(reported, added);
+  row.appendChild(values);
+
+  const trimLabel = document.createElement('label');
+  trimLabel.className = 'device-trim-label';
+  const trimValue = document.createElement('span');
+  trimValue.textContent = 'Trim: ' + state.trimMs + ' ms';
+  trimLabel.appendChild(trimValue);
+  const slider = document.createElement('input');
+  slider.className = 'device-trim-slider';
+  slider.type = 'range';
+  slider.min = '-150';
+  slider.max = '150';
+  slider.step = '5';
+  slider.value = String(state.trimMs);
+  slider.setAttribute('aria-label', state.deviceLabel + ' trim in milliseconds');
+  slider.oninput = () => {
+    state.trimMs = Number(slider.value);
+    trimValue.textContent = 'Trim: ' + state.trimMs + ' ms';
+    if (state.deviceId)
+      localStorage.setItem('pcspk-device-trim-ms-' + state.deviceId, String(state.trimMs));
+    applyDeviceDelay(state);
+  };
+  trimLabel.appendChild(slider);
+  row.appendChild(trimLabel);
+
+  const channelLabel = document.createElement('label');
+  channelLabel.className = 'device-channel-label';
+  channelLabel.textContent = 'Audio channel';
+  const channelSelect = document.createElement('select');
+  channelSelect.className = 'device-channel-select';
+  channelSelect.setAttribute('aria-label', state.deviceLabel + ' audio channel');
+  [
+    ['stereo', 'Stereo'],
+    ['left', 'Left'],
+    ['right', 'Right']
+  ].forEach(([value, text]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = text;
+    channelSelect.appendChild(option);
+  });
+  channelSelect.value = state.channelMode;
+  channelSelect.onchange = () => {
+    state.channelMode = channelSelect.value;
+    if (state.deviceId)
+      localStorage.setItem('pcspk-device-channel-mode-' + state.deviceId, state.channelMode);
+    routeDeviceChannels(state);
+  };
+  channelLabel.appendChild(channelSelect);
+  row.appendChild(channelLabel);
+
+  state.row = row;
+  $('device-delays').appendChild(row);
+  updateDeviceRow(state);
+}
+
+function applyDeviceDelay(state) {
+  if (!audioContext || !state.delayNode) return;
+  const delayMs = Math.max(0, Math.min(1000, state.autoOffsetMs + state.trimMs));
+  if (Math.abs(delayMs - state.appliedDelayMs) < 10) return;
+  state.delayNode.delayTime.setTargetAtTime(delayMs / 1000, audioContext.currentTime, 0.05);
+  state.appliedDelayMs = delayMs;
+  updateDeviceRow(state);
+}
+
+function updateDeviceDelays() {
+  const activeStates = [];
+  let largestReportedMs = null;
+  connectionStates.forEach(state => {
+    if (!state.active) return;
+    activeStates.push(state);
+    if (Number.isFinite(state.reportedMs))
+      largestReportedMs = largestReportedMs === null
+        ? state.reportedMs : Math.max(largestReportedMs, state.reportedMs);
+  });
+
+  activeStates.forEach(state => {
+    state.autoOffsetMs = autoAlign && largestReportedMs !== null && Number.isFinite(state.reportedMs)
+      ? largestReportedMs - state.reportedMs : 0;
+    applyDeviceDelay(state);
+  });
+}
+
+function routeDeviceChannels(state) {
+  if (!state.channelSplitter || !state.channelMerger) return;
+  state.channelSplitter.disconnect();
+  if (state.channelMode === 'left') {
+    state.channelSplitter.connect(state.channelMerger, 0, 0);
+    state.channelSplitter.connect(state.channelMerger, 0, 1);
+  } else if (state.channelMode === 'right') {
+    state.channelSplitter.connect(state.channelMerger, 1, 0);
+    state.channelSplitter.connect(state.channelMerger, 1, 1);
+  } else {
+    state.channelSplitter.connect(state.channelMerger, 0, 0);
+    state.channelSplitter.connect(state.channelMerger, 1, 1);
+  }
+}
+
+function createDeviceStream(state) {
+  if (state.delayNode) return state.destination.stream;
+  const delayNode = audioContext.createDelay(1);
+  const channelSplitter = audioContext.createChannelSplitter(2);
+  const channelMerger = audioContext.createChannelMerger(2);
+  const destination = audioContext.createMediaStreamDestination();
+  destination.channelCount = 2;
+  destination.channelCountMode = 'explicit';
+  state.delayNode = delayNode;
+  state.channelSplitter = channelSplitter;
+  state.channelMerger = channelMerger;
+  state.destination = destination;
+  audioSource.connect(delayNode);
+  delayNode.connect(channelSplitter);
+  channelMerger.connect(destination);
+  routeDeviceChannels(state);
+  const track = destination.stream.getAudioTracks()[0];
+  if (!track) throw new Error('The audio destination did not create an audio track.');
+  track.contentHint = 'music';
+  applyDeviceDelay(state);
+  return destination.stream;
+}
+
+function cleanupDeviceAudio(state) {
+  if (audioSource && state.delayNode) audioSource.disconnect(state.delayNode);
+  if (state.delayNode) state.delayNode.disconnect();
+  if (state.channelSplitter) state.channelSplitter.disconnect();
+  if (state.channelMerger) state.channelMerger.disconnect();
+  if (state.destination) {
+    state.destination.disconnect();
+    state.destination.stream.getTracks().forEach(track => track.stop());
+  }
+  state.delayNode = null;
+  state.channelSplitter = null;
+  state.channelMerger = null;
+  state.destination = null;
+  state.appliedDelayMs = 0;
+  updateDeviceRow(state);
+}
+
+function closeAudioContext() {
+  if (audioSource) audioSource.disconnect();
+  audioSource = null;
+  const context = audioContext;
+  audioContext = null;
+  if (context) context.close().catch(error => console.error('Could not close audio context:', error));
+}
+
+function getActiveDeviceState(id) {
+  for (const [conn, state] of connectionStates)
+    if (conn.peer === id && state.active) return state;
+  return null;
+}
+
 function callIt(id) {
   if (!stream || calls[id]) return;
-  const c = peer.call(id, stream, { sdpTransform: stereo });
+  const state = getActiveDeviceState(id);
+  if (!state) return;
+  const c = peer.call(id, createDeviceStream(state), { sdpTransform: stereo });
   calls[id] = c;
-  c.on('close', () => { delete calls[id]; update(); });
+  c.on('close', () => {
+    if (calls[id] === c) delete calls[id];
+    update();
+  });
   update();
 }
 
@@ -162,6 +382,7 @@ function activateConnection(conn, state) {
   if (!state.approved || !state.open || !conn.open || state.active) return;
   state.active = true;
   ids.add(conn.peer);
+  addDeviceRow(conn, state);
   callIt(conn.peer);
   update();
 }
@@ -220,7 +441,17 @@ function rememberDevice(id) {
 }
 
 function stopSharing() {
-  Object.values(calls).forEach(c => c.close());
+  Object.entries(calls).forEach(([id, call]) => {
+    call.close();
+    delete calls[id];
+  });
+  connectionStates.forEach(state => {
+    cleanupDeviceAudio(state);
+    state.reportedMs = null;
+    state.autoOffsetMs = 0;
+    updateDeviceRow(state);
+  });
+  closeAudioContext();
   if (display) display.getTracks().forEach(t => t.stop());
   display = null; stream = null;
   $('start').disabled = false;
@@ -260,7 +491,19 @@ function start(code) {
       declined: false,
       declineTimer: null,
       deviceId: device.deviceId,
-      deviceLabel: device.deviceLabel
+      deviceLabel: device.deviceLabel,
+      reportedMs: null,
+      trimMs: getSavedTrimMs(device.deviceId),
+      channelMode: getSavedChannelMode(device.deviceId),
+      autoOffsetMs: 0,
+      appliedDelayMs: 0,
+      delayNode: null,
+      channelSplitter: null,
+      channelMerger: null,
+      destination: null,
+      row: null,
+      reportedValue: null,
+      delayValue: null
     };
     connectionStates.set(conn, state);
     if (!state.approved) pendingConnections.push(conn);
@@ -271,6 +514,13 @@ function start(code) {
       updateApproval();
     });
     conn.on('data', message => {
+      if (message && message.type === 'stats' && Number.isFinite(message.ms)) {
+        const deviceSuffix = state.deviceId ? state.deviceId.slice(-6) : conn.peer.slice(-6);
+        console.log('Device delay stats:', state.deviceLabel, deviceSuffix, message.ms, 'ms');
+        state.reportedMs = message.ms;
+        updateDeviceRow(state);
+        updateDeviceDelays();
+      }
       if (state.declined && message && message.type === 'approval-ack' && message.status === 'declined') {
         clearTimeout(state.declineTimer);
         conn.close();
@@ -284,9 +534,12 @@ function start(code) {
         ids.delete(conn.peer);
         if (calls[conn.peer]) calls[conn.peer].close();
         delete calls[conn.peer];
+        cleanupDeviceAudio(state);
+        if (state.row) state.row.remove();
       }
       knownPeers.delete(conn.peer);
       connectionStates.delete(conn);
+      updateDeviceDelays();
       update();
       updateApproval();
     });
@@ -296,6 +549,10 @@ function start(code) {
 
 $('allow-device').onclick = allowNextDevice;
 $('deny-device').onclick = declineNextDevice;
+$('auto-align').onchange = () => {
+  autoAlign = $('auto-align').checked;
+  updateDeviceDelays();
+};
 $('forget-devices').onclick = () => {
   approvedDeviceIds.clear();
   localStorage.removeItem(approvalStorageKey);
@@ -305,20 +562,28 @@ $('forget-devices').onclick = () => {
 
 $('start').onclick = async () => {
   try {
+    audioContext = new AudioContext({ latencyHint: 'interactive' });
+    await audioContext.resume();
     display = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 1 },
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 },
       systemAudio: 'include'
     });
-  } catch (e) { return setStatus('Sharing cancelled (' + e.name + ').', 'bad'); }
+  } catch (e) {
+    closeAudioContext();
+    return setStatus('Sharing cancelled (' + e.name + ').', 'bad');
+  }
   const track = display.getAudioTracks()[0];
   if (!track) {
     display.getTracks().forEach(t => t.stop());
+    display = null;
+    closeAudioContext();
     return setStatus('No audio was shared. Choose Entire screen and tick "Share system audio".', 'bad');
   }
   track.contentHint = 'music';
   track.onended = stopSharing;
   stream = new MediaStream([track]);   // audio only goes to the phone
+  audioSource = audioContext.createMediaStreamSource(stream);
   $('start').disabled = true;
   $('pairing').hidden = true; $('session').hidden = false;
   ids.forEach(callIt); update();
