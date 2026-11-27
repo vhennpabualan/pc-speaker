@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PC Speaker - Offline</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101826; color: #eef2f8; font: 16px/1.5 sans-serif; }
+    main { max-width: 420px; text-align: center; padding: 28px; }
+    button { margin-top: 16px; padding: 14px 22px; border: 0; border-radius: 12px; background: #4fd1c5; color: #08202a; font: 700 16px sans-serif; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PC Speaker is offline</h1>
+    <p>Check your internet connection, then retry.</p>
+    <button id="retry" type="button">Retry</button>
+  </main>
+  <script>
+    document.getElementById('retry').addEventListener('click', () => {
+      const target = new URLSearchParams(location.search).get('target');
+      window.location.replace(target || 'https://pc-speaker.vercel.app/send');
+    });
+  </script>
+</body>
+</html>

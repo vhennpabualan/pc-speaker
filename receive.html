@@ -27,7 +27,7 @@
   #scan-msg{margin-bottom:10px}
   .delay-panel{margin-top:18px;text-align:left}
   .delay-panel span{display:block;margin-bottom:8px;color:var(--mut);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
-  .delay-presets{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .delay-presets{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
   .delay-presets button{margin:0;padding:10px 4px;font-size:14px;border:2px solid #2b3a57;background:transparent;color:var(--fg)}
   .delay-presets button.active{background:var(--acc);border-color:var(--acc);color:#08202a}
 </style></head><body><main>
@@ -65,7 +65,6 @@
   <div class="delay-panel" role="group" aria-label="Audio delay presets">
     <span>Delay preset</span>
     <div class="delay-presets">
-      <button type="button" data-delay="20">Low<br><small>20 ms</small></button>
       <button type="button" data-delay="50">Balanced<br><small>50 ms</small></button>
       <button type="button" data-delay="100">Stable<br><small>100 ms</small></button>
     </div>
@@ -110,7 +109,7 @@ let peer, call, wake, timer, prev = null, hist = [];
 let qrScanner;
 let connectionAttempt = 0;
 const savedDelay = Number(localStorage.getItem('pcspk-delay-ms'));
-let targetMs = [20, 50, 100].includes(savedDelay) ? savedDelay : 20;
+let targetMs = [50, 100].includes(savedDelay) ? savedDelay : 50;
 
 $('code').value = localStorage.getItem('code') || '';
 
